@@ -178,6 +178,45 @@ def test_notify_wake_failure_stays_best_effort(tmp_path, monkeypatch):
     # pre-existing task_terminal behavior, unrelated to the wake outcome.)
 
 
+def test_required_wake_success_advances_only_after_passive_and_wake(
+    tmp_path, monkeypatch,
+):
+    """A required wake is part of delivery, not a best-effort side effect."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "required-wake-ok.db"))
+    kb.init_db()
+    tid = _make_completed_task("notify+required-wake")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+    assert _unseen_terminal_events(tid) == []
+    assert runner._kanban_sub_fail_counts == {}
+
+
+def test_required_wake_failure_rewinds_instead_of_acknowledging(
+    tmp_path, monkeypatch,
+):
+    """A failed required wake leaves the terminal event eligible for retry."""
+    monkeypatch.setenv(
+        "HERMES_KANBAN_DB", str(tmp_path / "required-wake-fail.db"),
+    )
+    kb.init_db()
+    tid = _make_completed_task("notify+required-wake")
+
+    adapter = FailingWakeAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+    assert len(_unseen_terminal_events(tid)) == 1
+    assert list(runner._kanban_sub_fail_counts.values()) == [1]
+    assert len(_subs(tid)) == 1
+
+
 def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     """After MAX_SEND_FAILURES consecutive wake failures the sub is dropped."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-cap.db"))

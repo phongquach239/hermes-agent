@@ -563,7 +563,10 @@ class GatewayKanbanWatchersMixin:
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
                     mode = sub.get("delivery_mode") or "notify"
-                    wake_agent = mode in ("notify+wake", "wake")
+                    wake_agent = mode in (
+                        "notify+wake", "notify+required-wake", "wake",
+                    )
+                    required_wake = mode == "notify+required-wake"
                     send_passive = mode != "wake"
                     # Worker handoff carried into the synthetic wake turn below
                     # (#70752): without it the woken creator only sees
@@ -1015,15 +1018,16 @@ class GatewayKanbanWatchersMixin:
                                 sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
                             )
 
-                        if _is_push_adapter and not send_passive and _wake_kinds:
-                            # Wake-only (delivery_mode='wake') push sub: the
-                            # text ping was intentionally skipped above, so
-                            # the wake IS the sole delivery. It must succeed
-                            # BEFORE the cursor advances — advancing first
-                            # would let a failed wake (previously swallowed
-                            # by the best-effort except below) permanently
-                            # lose the event. Mirrors the non-push
-                            # (api_server) self-post ordering above.
+                        if (
+                            _is_push_adapter
+                            and (not send_passive or required_wake)
+                            and _wake_kinds
+                        ):
+                            # Wake-only and notify+required-wake subscriptions
+                            # treat the native wake as part of delivery. It
+                            # must succeed BEFORE the cursor advances. Plain
+                            # notify+wake remains best-effort after its passive
+                            # message has been acknowledged.
                             try:
                                 await _push_wake()
                                 sub_fail_counts.pop(sub_key, None)
@@ -1031,7 +1035,7 @@ class GatewayKanbanWatchersMixin:
                                 fails = sub_fail_counts.get(sub_key, 0) + 1
                                 sub_fail_counts[sub_key] = fails
                                 logger.warning(
-                                    "kanban notifier: wake-only delivery failed "
+                                    "kanban notifier: required wake delivery failed "
                                     "for %s (attempt %d/%d): %s",
                                     sub["task_id"], fails,
                                     MAX_SEND_FAILURES, _wk_err, exc_info=True,
@@ -1074,7 +1078,12 @@ class GatewayKanbanWatchersMixin:
                         # work for review corrections and continuation. The
                         # retained cursor prevents replay while preserving the
                         # original delivery and wake ownership for that cycle.
-                        if _is_push_adapter and send_passive and _wake_kinds:
+                        if (
+                            _is_push_adapter
+                            and send_passive
+                            and not required_wake
+                            and _wake_kinds
+                        ):
                             # notify+wake: the text ping above was the
                             # delivery and the cursor has advanced; the wake
                             # injection stays best-effort.

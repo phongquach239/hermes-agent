@@ -2185,7 +2185,11 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        try:
+            task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        except kb.ManagedTaskAuthorityError as exc:
+            print(f"cannot claim {args.task_id}: {exc}", file=sys.stderr)
+            return 1
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)

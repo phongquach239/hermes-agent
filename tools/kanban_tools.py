@@ -166,6 +166,44 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _managed_worker_authority(kb, conn, task_id: str) -> Optional[dict]:
+    """Bind a managed tool mutation to the exact dispatcher-spawned attempt."""
+    authority = kb.managed_task_claim_authority(conn, task_id)
+    if authority is None:
+        return None
+    expected = {
+        "current_run_id": os.environ.get("HERMES_KANBAN_RUN_ID"),
+        "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK"),
+        "claim_generation": os.environ.get("HERMES_KANBAN_CLAIM_GENERATION"),
+        "task_run_generation": os.environ.get(
+            "HERMES_KANBAN_TASK_RUN_GENERATION"
+        ),
+    }
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id or any(
+        value in {None, ""} for value in expected.values()
+    ):
+        raise kb.ManagedTaskAuthorityError(
+            "managed worker is missing its exact spawned authority"
+        )
+    try:
+        matches = (
+            int(expected["current_run_id"])
+            == int(authority["current_run_id"])
+            and expected["claim_lock"] == authority["claim_lock"]
+            and int(expected["claim_generation"])
+            == int(authority["claim_generation"])
+            and int(expected["task_run_generation"])
+            == int(authority["task_run_generation"])
+        )
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise kb.ManagedTaskAuthorityError(
+            "managed worker spawned authority is stale or substituted"
+        )
+    return authority
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
@@ -766,12 +804,31 @@ def _handle_complete(args: dict, **kw) -> str:
                 )
 
             try:
-                ok = kb.complete_task(
-                    conn, tid,
-                    result=result, summary=summary, metadata=metadata,
-                    created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
-                )
+                managed_authority = _managed_worker_authority(kb, conn, tid)
+                if managed_authority is not None:
+                    if created_cards:
+                        return tool_error(
+                            "managed completion does not accept created_cards"
+                        )
+                    ok = kb.complete_managed_task(
+                        conn,
+                        tid,
+                        claim_lock=str(managed_authority["claim_lock"]),
+                        claim_generation=int(
+                            managed_authority["claim_generation"]
+                        ),
+                        result=result,
+                        summary=summary,
+                        metadata=metadata,
+                        evidence=args.get("evidence"),
+                    )
+                else:
+                    ok = kb.complete_task(
+                        conn, tid,
+                        result=result, summary=summary, metadata=metadata,
+                        created_cards=created_cards,
+                        expected_run_id=_worker_run_id(tid),
+                    )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
                     f"kanban_complete could not preserve the declared artifacts: "
@@ -865,12 +922,26 @@ def _handle_block(args: dict, **kw) -> str:
                 f"completion judge will evaluate it."
             )
         try:
-            ok = kb.block_task(
-                conn, tid,
-                reason=reason,
-                kind=kind,
-                expected_run_id=_worker_run_id(tid),
-            )
+            managed_authority = _managed_worker_authority(kb, conn, tid)
+            if managed_authority is not None:
+                ok = kb.block_managed_task(
+                    conn,
+                    tid,
+                    claim_lock=str(managed_authority["claim_lock"]),
+                    claim_generation=int(
+                        managed_authority["claim_generation"]
+                    ),
+                    reason=reason,
+                    kind=kind,
+                    retry=bool(args.get("retry", False)),
+                )
+            else:
+                ok = kb.block_task(
+                    conn, tid,
+                    reason=reason,
+                    kind=kind,
+                    expected_run_id=_worker_run_id(tid),
+                )
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
@@ -1481,7 +1552,12 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
-def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
+def _maybe_auto_subscribe(
+    conn: Any,
+    task_id: str,
+    *,
+    required_wake: bool = False,
+) -> bool:
     """Auto-subscribe the calling session to task completion / block events.
 
     Returns True if a subscription row was written, False otherwise (no
@@ -1558,7 +1634,11 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         is_gateway_session = platform != "tui"
         chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
-        delivery_mode = "notify+wake" if is_gateway_session else None
+        delivery_mode = (
+            "notify+required-wake"
+            if is_gateway_session and required_wake
+            else ("notify+wake" if is_gateway_session else None)
+        )
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
         user_id_alt = get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None
@@ -1850,6 +1930,14 @@ KANBAN_COMPLETE_SCHEMA = {
                     "task in-flight so you can fix the path and retry."
                 ),
             },
+            "evidence": {
+                "type": "object",
+                "description": (
+                    "Exact managed_task_evidence_v1 receipt required for "
+                    "Core-managed DAG tasks. Core validates its closed schema, "
+                    "Git provenance, artifacts, checks, and parent receipts."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": [],
@@ -1892,6 +1980,13 @@ KANBAN_BLOCK_SCHEMA = {
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
+                ),
+            },
+            "retry": {
+                "type": "boolean",
+                "description": (
+                    "For a Core-managed task only, close this exact attempt "
+                    "and requeue it after releasing all resource leases."
                 ),
             },
             "board": _board_schema_prop(),

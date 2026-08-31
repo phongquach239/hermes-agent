@@ -79,6 +79,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -86,8 +87,8 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -1474,7 +1475,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    workspace_start_commit TEXT,
+    workspace_start_tree TEXT,
+    workspace_authority_sha256 TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1514,6 +1518,170 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Established linear_v1 graph authority retained for archive adapters that
+-- materialize a staged linear swarm before the native managed-DAG rollout.
+CREATE TABLE IF NOT EXISTS task_authority (
+    task_id TEXT PRIMARY KEY,
+    authority_version INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    lineage_root_session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    hm_loop_run_id TEXT NOT NULL,
+    phase_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    project_root TEXT NOT NULL,
+    project_generation INTEGER NOT NULL,
+    workspace_kind TEXT NOT NULL,
+    workspace_path TEXT NOT NULL,
+    network_policy TEXT NOT NULL,
+    correlation_key TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    authority_sha256 TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_workspace_authority (
+    task_id TEXT PRIMARY KEY,
+    repository_root TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    base_tree TEXT NOT NULL,
+    authority_sha256 TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kanban_graph_generations (
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    activation_epoch INTEGER,
+    topology_preimage_sha256 TEXT NOT NULL,
+    topology_digest TEXT NOT NULL,
+    create_key TEXT NOT NULL UNIQUE,
+    request_sha256 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    activated_at INTEGER,
+    PRIMARY KEY (root_task_id, topology_generation)
+);
+
+CREATE TABLE IF NOT EXISTS graph_generation_members (
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    authority_sha256 TEXT NOT NULL,
+    PRIMARY KEY (root_task_id, topology_generation, task_id),
+    UNIQUE (root_task_id, topology_generation, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS graph_generation_links (
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    parent_task_id TEXT NOT NULL,
+    child_task_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (root_task_id, topology_generation, parent_task_id, child_task_id),
+    UNIQUE (root_task_id, topology_generation, ordinal)
+);
+
+-- hm-loop managed DAG authority.  These rows deliberately live beside the
+-- task lifecycle tables: reserving the graph generation and creating every
+-- task, edge, notification target, and resource declaration must be one
+-- BEGIN IMMEDIATE transaction, never a cross-database handshake.
+CREATE TABLE IF NOT EXISTS managed_task_graphs (
+    create_key        TEXT PRIMARY KEY,
+    request_sha256    TEXT NOT NULL,
+    board             TEXT NOT NULL,
+    run_id            TEXT NOT NULL,
+    graph_sha256      TEXT NOT NULL,
+    graph_generation  INTEGER NOT NULL CHECK (graph_generation >= 1),
+    final_join_node_id TEXT NOT NULL,
+    state             TEXT NOT NULL CHECK (state IN ('staged', 'active')),
+    request_json      TEXT NOT NULL,
+    result_json       TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    activated_at      INTEGER,
+    UNIQUE (board, run_id, graph_generation)
+);
+
+CREATE TABLE IF NOT EXISTS managed_task_authority (
+    task_id             TEXT PRIMARY KEY,
+    create_key          TEXT NOT NULL,
+    node_id             TEXT NOT NULL,
+    logical_node_id     TEXT NOT NULL,
+    task_kind           TEXT NOT NULL,
+    task_generation     INTEGER NOT NULL,
+    task_run_generation INTEGER NOT NULL,
+    expected_artifacts  TEXT NOT NULL DEFAULT '[]',
+    claim_frontier_epoch INTEGER NOT NULL DEFAULT 0 CHECK (claim_frontier_epoch >= 0),
+    mutating            INTEGER NOT NULL CHECK (mutating IN (0, 1)),
+    claim_generation    INTEGER NOT NULL DEFAULT 0 CHECK (claim_generation >= 0),
+    UNIQUE (create_key, node_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
+    FOREIGN KEY (create_key) REFERENCES managed_task_graphs(create_key) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS managed_task_resources (
+    task_id             TEXT NOT NULL,
+    task_run_generation INTEGER NOT NULL,
+    resource_key        TEXT NOT NULL,
+    PRIMARY KEY (task_id, resource_key),
+    FOREIGN KEY (task_id) REFERENCES managed_task_authority(task_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS managed_resource_leases (
+    resource_key        TEXT PRIMARY KEY,
+    task_id             TEXT NOT NULL,
+    task_run_id         INTEGER NOT NULL,
+    task_run_generation INTEGER NOT NULL,
+    claim_lock          TEXT NOT NULL,
+    claim_generation    INTEGER NOT NULL,
+    acquired_at         INTEGER NOT NULL,
+    expires_at          INTEGER NOT NULL,
+    heartbeat_at        INTEGER NOT NULL,
+    released_at         INTEGER,
+    release_reason      TEXT,
+    FOREIGN KEY (task_id) REFERENCES managed_task_authority(task_id) ON DELETE RESTRICT,
+    FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS managed_resource_lease_events (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_key         TEXT NOT NULL,
+    task_id              TEXT NOT NULL,
+    task_run_id          INTEGER NOT NULL,
+    task_run_generation  INTEGER NOT NULL,
+    claim_lock           TEXT NOT NULL,
+    claim_generation     INTEGER NOT NULL,
+    kind                 TEXT NOT NULL,
+    reason               TEXT,
+    created_at           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS managed_graph_frontiers (
+    create_key       TEXT PRIMARY KEY,
+    frontier_epoch   INTEGER NOT NULL DEFAULT 0 CHECK (frontier_epoch >= 0),
+    FOREIGN KEY (create_key) REFERENCES managed_task_graphs(create_key) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS managed_finalize_tokens (
+    request_id          TEXT PRIMARY KEY,
+    request_sha256      TEXT NOT NULL,
+    create_key          TEXT NOT NULL,
+    logical_node_id     TEXT NOT NULL,
+    task_run_generation INTEGER NOT NULL,
+    claim_frontier_epoch INTEGER NOT NULL,
+    decision_id         TEXT NOT NULL,
+    decision_sha256     TEXT NOT NULL,
+    token_state         TEXT NOT NULL CHECK (token_state = 'issued_and_consumed'),
+    result_json         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    UNIQUE (create_key, logical_node_id, task_run_generation, claim_frontier_epoch),
+    FOREIGN KEY (create_key) REFERENCES managed_task_graphs(create_key) ON DELETE RESTRICT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1524,6 +1692,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_managed_graph_run      ON managed_task_graphs(board, run_id, graph_generation);
+CREATE INDEX IF NOT EXISTS idx_managed_authority_graph ON managed_task_authority(create_key, node_id);
+CREATE INDEX IF NOT EXISTS idx_managed_resources_task ON managed_task_resources(task_id, resource_key);
+CREATE INDEX IF NOT EXISTS idx_managed_leases_owner   ON managed_resource_leases(task_id, task_run_id, released_at);
+CREATE INDEX IF NOT EXISTS idx_managed_lease_events_owner ON managed_resource_lease_events(task_id, task_run_id, id);
 """
 
 
@@ -2719,6 +2892,68 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    run_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone()
+    if run_table_exists is not None:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        for column in (
+            "workspace_start_commit",
+            "workspace_start_tree",
+            "workspace_authority_sha256",
+        ):
+            if column not in run_cols:
+                _add_column_if_missing(conn, "task_runs", column, f"{column} TEXT")
+
+    managed_authority_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='managed_task_authority'"
+    ).fetchone()
+    if managed_authority_exists is not None:
+        managed_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(managed_task_authority)")
+        }
+        if "logical_node_id" not in managed_cols:
+            _add_column_if_missing(
+                conn, "managed_task_authority", "logical_node_id", "TEXT"
+            )
+        if "expected_artifacts" not in managed_cols:
+            _add_column_if_missing(
+                conn,
+                "managed_task_authority",
+                "expected_artifacts",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )
+        if "claim_frontier_epoch" not in managed_cols:
+            _add_column_if_missing(
+                conn,
+                "managed_task_authority",
+                "claim_frontier_epoch",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS managed_graph_frontiers ("
+        "create_key TEXT PRIMARY KEY,frontier_epoch INTEGER NOT NULL DEFAULT 0,"
+        "FOREIGN KEY(create_key) REFERENCES managed_task_graphs(create_key) "
+        "ON DELETE RESTRICT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS managed_finalize_tokens ("
+        "request_id TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,"
+        "create_key TEXT NOT NULL,logical_node_id TEXT NOT NULL,"
+        "task_run_generation INTEGER NOT NULL,claim_frontier_epoch INTEGER NOT NULL,"
+        "decision_id TEXT NOT NULL,decision_sha256 TEXT NOT NULL,"
+        "token_state TEXT NOT NULL CHECK(token_state='issued_and_consumed'),"
+        "result_json TEXT NOT NULL,created_at INTEGER NOT NULL,"
+        "UNIQUE(create_key,logical_node_id,task_run_generation,claim_frontier_epoch),"
+        "FOREIGN KEY(create_key) REFERENCES managed_task_graphs(create_key) "
+        "ON DELETE RESTRICT)"
+    )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -3575,6 +3810,1340 @@ def create_task(
     raise RuntimeError("unreachable")
 
 
+# ---------------------------------------------------------------------------
+# Core-owned managed DAG materialization
+# ---------------------------------------------------------------------------
+
+
+class KanbanProtocolError(ValueError):
+    """Stable machine-readable failure for the retained linear graph API."""
+
+    def __init__(
+        self, code: str, message: str, *, conflict_ids: Iterable[Any] = ()
+    ) -> None:
+        self.code = code
+        self.conflict_ids = tuple(conflict_ids)
+        suffix = (
+            f" ({', '.join(map(str, self.conflict_ids))})"
+            if self.conflict_ids
+            else ""
+        )
+        super().__init__(f"{code}: {message}{suffix}")
+
+
+_LINEAR_GRAPH_REQUEST_KEYS = {
+    "create_key", "request_sha256", "scope", "root_task_id",
+    "topology_generation", "tasks", "members", "links", "initial_state",
+}
+_LINEAR_TASK_AUTHORITY_KEYS = {
+    "task_id", "authority_version", "scope", "lineage_root_session_id",
+    "turn_id", "hm_loop_run_id", "phase_id", "attempt_no", "root_task_id",
+    "topology_generation", "project_root", "project_generation",
+    "workspace_kind", "workspace_path", "network_policy", "correlation_key",
+    "request_sha256", "created_at",
+}
+_LINEAR_MEMBER_KEYS = {
+    "root_task_id", "topology_generation", "task_id", "ordinal", "role",
+    "authority_sha256",
+}
+_LINEAR_LINK_KEYS = {
+    "root_task_id", "topology_generation", "parent_task_id", "child_task_id",
+    "ordinal",
+}
+
+
+def _linear_protocol_error(code: str, message: str) -> KanbanProtocolError:
+    return KanbanProtocolError(code, message)
+
+
+def _linear_closed(value: object, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", f"{label} keys differ")
+    return dict(value)
+
+
+def _linear_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", f"{label} is invalid")
+    return value
+
+
+def _linear_positive_int(value: object, label: str, *, zero_ok: bool = False) -> int:
+    floor = 0 if zero_ok else 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < floor:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", f"{label} is invalid")
+    return value
+
+
+def _linear_sha(value: object, label: str) -> str:
+    text = _linear_text(value, label)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", f"{label} is invalid")
+    return text
+
+
+def _validate_linear_graph_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    value = _linear_closed(request, _LINEAR_GRAPH_REQUEST_KEYS, "request")
+    for key in ("create_key", "scope", "root_task_id"):
+        value[key] = _linear_text(value[key], key)
+    value["request_sha256"] = _linear_sha(value["request_sha256"], "request_sha256")
+    value["topology_generation"] = _linear_positive_int(
+        value["topology_generation"], "topology_generation"
+    )
+    if value["initial_state"] not in {"staged", "active"}:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", "initial_state is invalid")
+    if not isinstance(value["tasks"], list) or not value["tasks"]:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", "tasks are required")
+    if not isinstance(value["members"], list) or not value["members"]:
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", "members are required")
+    if not isinstance(value["links"], list):
+        raise _linear_protocol_error("GRAPH_REQUEST_INVALID", "links must be a list")
+    tasks: list[dict[str, Any]] = []
+    task_ids: set[str] = set()
+    for index, raw in enumerate(value["tasks"]):
+        item = _linear_closed(raw, _LINEAR_TASK_AUTHORITY_KEYS, f"tasks[{index}]")
+        for key in (
+            "task_id", "scope", "lineage_root_session_id", "turn_id",
+            "hm_loop_run_id", "phase_id", "root_task_id", "project_root",
+            "workspace_kind", "workspace_path", "network_policy", "correlation_key",
+        ):
+            item[key] = _linear_text(item[key], f"tasks[{index}].{key}")
+        for key in (
+            "authority_version", "attempt_no", "topology_generation",
+            "project_generation", "created_at",
+        ):
+            item[key] = _linear_positive_int(item[key], f"tasks[{index}].{key}")
+        item["request_sha256"] = _linear_sha(
+            item["request_sha256"], f"tasks[{index}].request_sha256"
+        )
+        if item["task_id"] in task_ids:
+            raise _linear_protocol_error("GRAPH_DUPLICATE_MEMBER", "task ids repeat")
+        task_ids.add(item["task_id"])
+        tasks.append(item)
+    members: list[dict[str, Any]] = []
+    member_ids: set[str] = set()
+    ordinals: set[int] = set()
+    authority_by_id = {item["task_id"]: item for item in tasks}
+    for index, raw in enumerate(value["members"]):
+        item = _linear_closed(raw, _LINEAR_MEMBER_KEYS, f"members[{index}]")
+        for key in ("root_task_id", "task_id", "role"):
+            item[key] = _linear_text(item[key], f"members[{index}].{key}")
+        item["topology_generation"] = _linear_positive_int(
+            item["topology_generation"], "member topology_generation"
+        )
+        item["ordinal"] = _linear_positive_int(
+            item["ordinal"], "member ordinal", zero_ok=True
+        )
+        item["authority_sha256"] = _linear_sha(
+            item["authority_sha256"], "authority_sha256"
+        )
+        authority = authority_by_id.get(item["task_id"])
+        if authority is None or item["authority_sha256"] != _sha256_text(
+            json.dumps(authority, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        ):
+            raise _linear_protocol_error("TASK_AUTHORITY_MISMATCH", "authority hash differs")
+        if item["task_id"] in member_ids or item["ordinal"] in ordinals:
+            raise _linear_protocol_error("GRAPH_DUPLICATE_MEMBER", "member identity repeats")
+        member_ids.add(item["task_id"])
+        ordinals.add(item["ordinal"])
+        members.append(item)
+    if task_ids != member_ids or value["root_task_id"] not in member_ids:
+        raise _linear_protocol_error("GRAPH_MEMBER_MISSING", "member set differs")
+    links: list[dict[str, Any]] = []
+    endpoints: set[tuple[str, str]] = set()
+    link_ordinals: set[int] = set()
+    for index, raw in enumerate(value["links"]):
+        item = _linear_closed(raw, _LINEAR_LINK_KEYS, f"links[{index}]")
+        for key in ("root_task_id", "parent_task_id", "child_task_id"):
+            item[key] = _linear_text(item[key], f"links[{index}].{key}")
+        item["topology_generation"] = _linear_positive_int(
+            item["topology_generation"], "link topology_generation"
+        )
+        item["ordinal"] = _linear_positive_int(
+            item["ordinal"], "link ordinal", zero_ok=True
+        )
+        pair = (item["parent_task_id"], item["child_task_id"])
+        if (
+            pair[0] == pair[1]
+            or pair[0] not in member_ids
+            or pair[1] not in member_ids
+            or pair in endpoints
+            or item["ordinal"] in link_ordinals
+        ):
+            raise _linear_protocol_error("GRAPH_LINK_INVALID", "link is invalid")
+        endpoints.add(pair)
+        link_ordinals.add(item["ordinal"])
+        links.append(item)
+    root = value["root_task_id"]
+    generation = value["topology_generation"]
+    if any(
+        item["root_task_id"] != root
+        or item["topology_generation"] != generation
+        or item["scope"] != value["scope"]
+        for item in tasks
+    ) or any(
+        item["root_task_id"] != root or item["topology_generation"] != generation
+        for item in (*members, *links)
+    ):
+        raise _linear_protocol_error("GRAPH_MEMBER_MISMATCH", "graph identity differs")
+    value["tasks"], value["members"], value["links"] = tasks, members, links
+    return value
+
+
+def _linear_graph_topology(request: Mapping[str, Any]) -> str:
+    preimage = {
+        "root_task_id": request["root_task_id"],
+        "topology_generation": request["topology_generation"],
+        "members": sorted(
+            ({key: item[key] for key in ("task_id", "ordinal", "role", "authority_sha256")} for item in request["members"]),
+            key=lambda item: (item["ordinal"], item["task_id"]),
+        ),
+        "links": sorted(
+            ({key: item[key] for key in ("parent_task_id", "child_task_id", "ordinal")} for item in request["links"]),
+            key=lambda item: (item["ordinal"], item["parent_task_id"], item["child_task_id"]),
+        ),
+    }
+    return _sha256_text(
+        json.dumps(preimage, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    )
+
+
+def create_task_graph(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Persist the established linear graph authority in one savepoint."""
+    value = _validate_linear_graph_request(request)
+    digest = _linear_graph_topology(value)
+    with write_txn(conn, allow_nested=True):
+        existing = conn.execute(
+            "SELECT * FROM kanban_graph_generations WHERE create_key=?",
+            (value["create_key"],),
+        ).fetchone()
+        if existing is not None:
+            reconciled = reconcile_task_graph(conn, value)
+            assert reconciled is not None
+            return reconciled
+        for task_id in (item["task_id"] for item in value["members"]):
+            if conn.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone() is None:
+                raise KanbanProtocolError("TASK_NOT_FOUND", "member task is absent", conflict_ids=(task_id,))
+            if conn.execute("SELECT 1 FROM task_authority WHERE task_id=?", (task_id,)).fetchone():
+                raise KanbanProtocolError("TASK_ID_REUSED", "task authority exists", conflict_ids=(task_id,))
+        generation = int(value["topology_generation"])
+        if conn.execute(
+            "SELECT 1 FROM kanban_graph_generations WHERE root_task_id=? AND topology_generation=?",
+            (value["root_task_id"], generation),
+        ).fetchone():
+            raise KanbanProtocolError("GRAPH_GENERATION_REUSED", "generation exists")
+        now = max(int(item["created_at"]) for item in value["tasks"])
+        active = value["initial_state"] == "active"
+        conn.execute(
+            "INSERT INTO kanban_graph_generations(root_task_id,topology_generation,state,"
+            "activation_epoch,topology_preimage_sha256,topology_digest,create_key,"
+            "request_sha256,created_at,activated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (value["root_task_id"], generation, value["initial_state"], 1 if active else None,
+             digest, digest, value["create_key"], value["request_sha256"], now, now if active else None),
+        )
+        authority_columns = (
+            "task_id", "authority_version", "scope", "lineage_root_session_id",
+            "turn_id", "hm_loop_run_id", "phase_id", "attempt_no", "root_task_id",
+            "topology_generation", "project_root", "project_generation", "workspace_kind",
+            "workspace_path", "network_policy", "correlation_key", "request_sha256", "created_at",
+        )
+        for authority in value["tasks"]:
+            conn.execute(
+                "INSERT INTO task_authority(" + ",".join(authority_columns) + ",authority_sha256) "
+                "VALUES(" + ",".join("?" * (len(authority_columns) + 1)) + ")",
+                (*[authority[key] for key in authority_columns], _sha256_text(
+                    json.dumps(authority, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                )),
+            )
+        for member in value["members"]:
+            conn.execute(
+                "INSERT INTO graph_generation_members VALUES(?,?,?,?,?,?)",
+                tuple(member[key] for key in ("root_task_id", "topology_generation", "task_id", "ordinal", "role", "authority_sha256")),
+            )
+        for link in value["links"]:
+            conn.execute(
+                "INSERT INTO graph_generation_links VALUES(?,?,?,?,?)",
+                tuple(link[key] for key in ("root_task_id", "topology_generation", "parent_task_id", "child_task_id", "ordinal")),
+            )
+    return {
+        "root_task_id": value["root_task_id"], "topology_generation": generation,
+        "state": value["initial_state"], "topology_digest": digest,
+        "task_ids": [item["task_id"] for item in value["members"]],
+        "link_count": len(value["links"]), "created": True,
+    }
+
+
+def bind_unowned_tasks_as_graph(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    value = _validate_linear_graph_request(request)
+    if value["scope"] != "hm-loop" or value["initial_state"] != "staged":
+        raise KanbanProtocolError("GRAPH_BIND_SCOPE_INVALID", "only staged hm-loop graphs may bind")
+    if not conn.in_transaction:
+        raise KanbanProtocolError("GRAPH_BIND_OUTER_TRANSACTION_REQUIRED", "outer transaction is required")
+    with write_txn(conn, allow_nested=True):
+        for authority in value["tasks"]:
+            task_id = authority["task_id"]
+            task = conn.execute(
+                "SELECT session_id,workspace_kind,workspace_path,claim_lock,worker_pid,current_run_id "
+                "FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()
+            if (
+                task is None or task["session_id"] is not None
+                or task["workspace_kind"] != authority["workspace_kind"]
+                or task["workspace_path"] != authority["project_root"]
+                or task["claim_lock"] is not None or task["worker_pid"] is not None
+                or task["current_run_id"] is not None
+                or conn.execute("SELECT 1 FROM task_authority WHERE task_id=?", (task_id,)).fetchone()
+            ):
+                raise KanbanProtocolError("GRAPH_BIND_AUTHORITY_CONFLICT", "task is not fresh", conflict_ids=(task_id,))
+            conn.execute(
+                "UPDATE tasks SET workspace_kind=?,workspace_path=?,session_id=? WHERE id=?",
+                (authority["workspace_kind"], authority["workspace_path"], authority["lineage_root_session_id"], task_id),
+            )
+        return create_task_graph(conn, value)
+
+
+def reconcile_task_graph(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> Optional[dict[str, Any]]:
+    value = _validate_linear_graph_request(request)
+    row = conn.execute(
+        "SELECT * FROM kanban_graph_generations WHERE create_key=?", (value["create_key"],)
+    ).fetchone()
+    if row is None:
+        return None
+    digest = _linear_graph_topology(value)
+    if (
+        row["request_sha256"] != value["request_sha256"]
+        or row["root_task_id"] != value["root_task_id"]
+        or int(row["topology_generation"]) != int(value["topology_generation"])
+        or row["topology_digest"] != digest
+    ):
+        raise KanbanProtocolError("GRAPH_RECONCILE_CONFLICT", "graph identity differs")
+    root, generation = value["root_task_id"], int(value["topology_generation"])
+    observed_members = [tuple(item) for item in conn.execute(
+        "SELECT task_id,ordinal,role,authority_sha256 FROM graph_generation_members "
+        "WHERE root_task_id=? AND topology_generation=? ORDER BY ordinal,task_id",
+        (root, generation),
+    ).fetchall()]
+    expected_members = sorted(
+        [(item["task_id"], item["ordinal"], item["role"], item["authority_sha256"]) for item in value["members"]],
+        key=lambda item: (item[1], item[0]),
+    )
+    observed_links = [tuple(item) for item in conn.execute(
+        "SELECT parent_task_id,child_task_id,ordinal FROM graph_generation_links "
+        "WHERE root_task_id=? AND topology_generation=? ORDER BY ordinal,parent_task_id,child_task_id",
+        (root, generation),
+    ).fetchall()]
+    expected_links = sorted(
+        [(item["parent_task_id"], item["child_task_id"], item["ordinal"]) for item in value["links"]],
+        key=lambda item: (item[2], item[0], item[1]),
+    )
+    task_ids = sorted(item["task_id"] for item in value["tasks"])
+    observed_authorities = sorted(tuple(item) for item in conn.execute(
+        "SELECT task_id,authority_sha256 FROM task_authority WHERE task_id IN ("
+        + ",".join("?" * len(task_ids)) + ")", task_ids,
+    ).fetchall())
+    expected_authorities = sorted(
+        (item["task_id"], _sha256_text(json.dumps(item, ensure_ascii=False, separators=(",", ":"), sort_keys=True)))
+        for item in value["tasks"]
+    )
+    if observed_members != expected_members or observed_links != expected_links or observed_authorities != expected_authorities:
+        raise KanbanProtocolError("GRAPH_RECONCILE_CONFLICT", "persisted graph differs")
+    return {
+        "root_task_id": root, "topology_generation": generation, "state": row["state"],
+        "topology_digest": row["topology_digest"],
+        "task_ids": [item["task_id"] for item in value["members"]],
+        "link_count": len(value["links"]), "created": False,
+    }
+
+
+def bind_task_workspace_authorities(
+    conn: sqlite3.Connection, authorities: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    if isinstance(authorities, (str, bytes, bytearray)) or not isinstance(authorities, Sequence) or not authorities:
+        raise KanbanProtocolError("WORKSPACE_AUTHORITY_INVALID", "authority list is required")
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with write_txn(conn, allow_nested=True):
+        for raw in authorities:
+            keys = {"task_id", "repository_root", "base_commit", "base_tree", "authority_sha256", "created_at"}
+            if not isinstance(raw, Mapping) or set(raw) != keys:
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_INVALID", "authority keys differ")
+            item = dict(raw)
+            task_id = _linear_text(item["task_id"], "task_id")
+            if task_id in seen:
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_INVALID", "task repeats")
+            seen.add(task_id)
+            root = Path(_linear_text(item["repository_root"], "repository_root")).expanduser()
+            if not root.is_absolute() or not root.is_dir() or _git_toplevel(root.resolve()) != root.resolve():
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_INVALID", "repository root is unavailable")
+            root = root.resolve()
+            commit = _linear_text(item["base_commit"], "base_commit")
+            tree = _linear_text(item["base_tree"], "base_tree")
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None or len(tree) != len(commit) or re.fullmatch(r"[0-9a-f]+", tree) is None:
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_INVALID", "Git identity is invalid")
+            authority_sha = _linear_sha(item["authority_sha256"], "authority_sha256")
+            created_at = _linear_positive_int(item["created_at"], "created_at")
+            owner = conn.execute("SELECT project_root,scope FROM task_authority WHERE task_id=?", (task_id,)).fetchone()
+            if owner is None or owner["scope"] != "hm-loop" or Path(owner["project_root"]).resolve() != root:
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_CONFLICT", "task does not own repository", conflict_ids=(task_id,))
+            resolved_commit = subprocess.run(["git", "-C", str(root), "rev-parse", f"{commit}^{{commit}}"], capture_output=True, text=True, timeout=30, check=False)
+            resolved_tree = subprocess.run(["git", "-C", str(root), "rev-parse", f"{commit}^{{tree}}"], capture_output=True, text=True, timeout=30, check=False)
+            if resolved_commit.returncode or resolved_commit.stdout.strip() != commit or resolved_tree.returncode or resolved_tree.stdout.strip() != tree:
+                raise KanbanProtocolError("WORKSPACE_AUTHORITY_OBJECT_MISMATCH", "Git objects differ", conflict_ids=(task_id,))
+            expected = (str(root), commit, tree, authority_sha)
+            existing = conn.execute(
+                "SELECT repository_root,base_commit,base_tree,authority_sha256 FROM task_workspace_authority WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) != expected:
+                    raise KanbanProtocolError("WORKSPACE_AUTHORITY_CONFLICT", "workspace authority differs", conflict_ids=(task_id,))
+                results.append({"task_id": task_id, "created": False})
+                continue
+            conn.execute(
+                "INSERT INTO task_workspace_authority VALUES(?,?,?,?,?,?)",
+                (task_id, *expected, created_at),
+            )
+            results.append({"task_id": task_id, "created": True})
+    return results
+
+
+def activate_task_graph(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+    topology_generation: int,
+    expected_digest: str,
+) -> dict[str, Any]:
+    expected_digest = _linear_sha(expected_digest, "expected_digest")
+    now = int(time.time())
+    with write_txn(conn, allow_nested=True):
+        row = conn.execute(
+            "SELECT * FROM kanban_graph_generations WHERE root_task_id=? AND topology_generation=?",
+            (root_task_id, int(topology_generation)),
+        ).fetchone()
+        if row is None:
+            raise KanbanProtocolError("GRAPH_NOT_FOUND", "graph does not exist")
+        if row["topology_digest"] != expected_digest:
+            raise KanbanProtocolError("TOPOLOGY_DIGEST_CONFLICT", "digest differs")
+        if row["state"] == "active":
+            return {"root_task_id": root_task_id, "topology_generation": int(topology_generation), "activation_epoch": int(row["activation_epoch"]), "topology_digest": expected_digest, "activated_at": int(row["activated_at"])}
+        if row["state"] != "staged":
+            raise KanbanProtocolError("GRAPH_NOT_STAGED", "graph cannot activate")
+        updated = conn.execute(
+            "UPDATE kanban_graph_generations SET state='active',activation_epoch=1,activated_at=? "
+            "WHERE root_task_id=? AND topology_generation=? AND state='staged' AND topology_digest=?",
+            (now, root_task_id, int(topology_generation), expected_digest),
+        )
+        if updated.rowcount != 1:
+            raise KanbanProtocolError("GRAPH_ACTIVATION_LOST", "activation CAS lost")
+    return {"root_task_id": root_task_id, "topology_generation": int(topology_generation), "activation_epoch": 1, "topology_digest": expected_digest, "activated_at": now}
+
+_MANAGED_GRAPH_REQUEST_KEYS = {
+    "schema",
+    "board",
+    "run_id",
+    "create_key",
+    "request_sha256",
+    "graph_sha256",
+    "graph_generation",
+    "final_join_node_id",
+    "nodes",
+    "edges",
+}
+_MANAGED_GRAPH_NODE_KEYS = {
+    "node_id",
+    "logical_node_id",
+    "task_id",
+    "title",
+    "body",
+    "assignee",
+    "task_kind",
+    "task_generation",
+    "task_run_generation",
+    "mutating",
+    "resources",
+    "expected_artifacts",
+    "notify_targets",
+    "workspace_kind",
+    "workspace_path",
+    "base_commit",
+    "owned_paths",
+    "owning_root_id",
+    "owning_root_sha256",
+}
+_MANAGED_GRAPH_EDGE_KEYS = {"parent_node_id", "child_node_id"}
+_MANAGED_NOTIFY_TARGET_KEYS = {
+    "platform",
+    "chat_id",
+    "thread_id",
+    "user_id",
+    "user_id_alt",
+    "chat_type",
+    "notifier_profile",
+    "delivery_mode",
+    "delivery_metadata",
+}
+_MANAGED_TASK_KINDS = {"producer", "verifier", "barrier"}
+_MANAGED_MUTATION_AUTHORITY = object()
+_MANAGED_CLAIM_AUTHORITY = object()
+
+
+class ManagedGraphValidationError(ValueError):
+    """A managed graph request is not the exact closed Core contract."""
+
+
+class ManagedGraphConflictError(RuntimeError):
+    """A create key or active generation was replayed with unequal bytes."""
+
+
+class ManagedTaskAuthorityError(RuntimeError):
+    """A generic or stale caller attempted to mutate a Core-managed task."""
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def managed_graph_request_sha256(request: Mapping[str, Any]) -> str:
+    """Hash the closed request while omitting its self-describing hash field."""
+    if not isinstance(request, Mapping):
+        raise ManagedGraphValidationError("managed graph request must be an object")
+    payload = dict(request)
+    payload.pop("request_sha256", None)
+    return _sha256_text(_canonical_json(payload))
+
+
+def _require_closed_mapping(
+    value: object,
+    expected_keys: set[str],
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ManagedGraphValidationError(f"{label} must be an object")
+    actual = set(value)
+    if actual != expected_keys:
+        missing = sorted(expected_keys - actual)
+        extra = sorted(actual - expected_keys)
+        raise ManagedGraphValidationError(
+            f"{label} has invalid keys; missing={missing}, extra={extra}"
+        )
+    return dict(value)
+
+
+def _required_managed_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ManagedGraphValidationError(f"{label} must be a non-empty trimmed string")
+    return value
+
+
+def _optional_managed_string(value: object, label: str) -> Optional[str]:
+    if value is None:
+        return None
+    return _required_managed_string(value, label)
+
+
+def _require_sha256(value: object, label: str) -> str:
+    text = _required_managed_string(value, label)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise ManagedGraphValidationError(f"{label} must be lowercase sha256 hex")
+    return text
+
+
+def _require_git_oid(value: object, label: str) -> str:
+    text = _required_managed_string(value, label)
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
+        raise ManagedGraphValidationError(f"{label} must be a full lowercase Git object id")
+    return text
+
+
+def _canonical_absolute_path(value: object, label: str) -> str:
+    text = _required_managed_string(value, label)
+    path = Path(text)
+    if not path.is_absolute():
+        raise ManagedGraphValidationError(f"{label} must be absolute")
+    canonical = str(path.resolve(strict=False))
+    if text != canonical:
+        raise ManagedGraphValidationError(f"{label} must already be canonical")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.exists() and current.is_symlink():
+            raise ManagedGraphValidationError(f"{label} cannot traverse a symlink")
+    return canonical
+
+
+def _canonical_owned_path(value: object, label: str) -> str:
+    text = _required_managed_string(value, label)
+    if "\\" in text:
+        raise ManagedGraphValidationError(f"{label} must use POSIX separators")
+    path = PurePosixPath(text)
+    if path.is_absolute() or text != path.as_posix() or any(
+        part in {"", ".", ".."} for part in path.parts
+    ):
+        raise ManagedGraphValidationError(f"{label} must be a canonical relative path")
+    return text
+
+
+def _canonical_resource_key(value: object) -> str:
+    key = _required_managed_string(value, "resource key")
+    if any(character.isspace() for character in key):
+        raise ManagedGraphValidationError("resource key cannot contain whitespace")
+    prefix, separator, payload = key.partition(":")
+    if not separator or re.fullmatch(r"[a-z][a-z0-9_-]*", prefix) is None or not payload:
+        raise ManagedGraphValidationError("resource key must use canonical <kind>:<identity>")
+    if prefix == "path":
+        canonical = _canonical_absolute_path(payload, "path resource")
+        return f"path:{canonical}"
+    if "\\" in payload or "//" in payload or any(
+        part in {".", ".."} for part in payload.split("/")
+    ):
+        raise ManagedGraphValidationError("resource key contains a non-canonical alias")
+    return key
+
+
+def _validate_notify_target(value: object, label: str) -> dict[str, Any]:
+    target = _require_closed_mapping(value, _MANAGED_NOTIFY_TARGET_KEYS, label)
+    target["platform"] = _required_managed_string(target["platform"], f"{label}.platform")
+    target["chat_id"] = _required_managed_string(target["chat_id"], f"{label}.chat_id")
+    if not isinstance(target["thread_id"], str):
+        raise ManagedGraphValidationError(f"{label}.thread_id must be a string")
+    for key in (
+        "user_id",
+        "user_id_alt",
+        "chat_type",
+        "notifier_profile",
+    ):
+        target[key] = _optional_managed_string(target[key], f"{label}.{key}")
+    if target["delivery_mode"] not in _NOTIFY_DELIVERY_MODES:
+        raise ManagedGraphValidationError(
+            f"{label}.delivery_mode is unsupported"
+        )
+    metadata = target["delivery_metadata"]
+    if metadata is not None:
+        if not isinstance(metadata, Mapping) or any(
+            not isinstance(key, str)
+            or not key
+            or (
+                value is not None
+                and not isinstance(value, (str, int, float, bool))
+            )
+            for key, value in metadata.items()
+        ):
+            raise ManagedGraphValidationError(
+                f"{label}.delivery_metadata must contain scalar values"
+            )
+        target["delivery_metadata"] = _encode_notify_delivery_metadata(metadata)
+    return target
+
+
+def _validate_managed_graph_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = _require_closed_mapping(
+        request, _MANAGED_GRAPH_REQUEST_KEYS, "managed graph request"
+    )
+    if normalized["schema"] != "managed_task_graph_request_v1":
+        raise ManagedGraphValidationError("unsupported managed graph request schema")
+    for key in ("board", "run_id", "create_key", "final_join_node_id"):
+        normalized[key] = _required_managed_string(normalized[key], key)
+    normalized["request_sha256"] = _require_sha256(
+        normalized["request_sha256"], "request_sha256"
+    )
+    normalized["graph_sha256"] = _require_sha256(
+        normalized["graph_sha256"], "graph_sha256"
+    )
+    if normalized["request_sha256"] != managed_graph_request_sha256(normalized):
+        raise ManagedGraphValidationError("request_sha256 does not bind the request")
+    if (
+        isinstance(normalized["graph_generation"], bool)
+        or not isinstance(normalized["graph_generation"], int)
+        or normalized["graph_generation"] < 1
+    ):
+        raise ManagedGraphValidationError("graph_generation must be an integer >= 1")
+    if not isinstance(normalized["nodes"], list) or not normalized["nodes"]:
+        raise ManagedGraphValidationError("nodes must be a non-empty list")
+    if not isinstance(normalized["edges"], list):
+        raise ManagedGraphValidationError("edges must be a list")
+
+    node_ids: set[str] = set()
+    task_ids: set[str] = set()
+    writer_workspaces: set[str] = set()
+    nodes: list[dict[str, Any]] = []
+    for index, raw_node in enumerate(normalized["nodes"]):
+        label = f"nodes[{index}]"
+        node = _require_closed_mapping(raw_node, _MANAGED_GRAPH_NODE_KEYS, label)
+        node["node_id"] = _required_managed_string(node["node_id"], f"{label}.node_id")
+        node["logical_node_id"] = _required_managed_string(
+            node["logical_node_id"], f"{label}.logical_node_id"
+        )
+        node["task_id"] = _required_managed_string(node["task_id"], f"{label}.task_id")
+        node["title"] = _required_managed_string(node["title"], f"{label}.title")
+        node["body"] = _optional_managed_string(node["body"], f"{label}.body")
+        node["assignee"] = _optional_managed_string(node["assignee"], f"{label}.assignee")
+        if node["task_kind"] not in _MANAGED_TASK_KINDS:
+            raise ManagedGraphValidationError(f"{label}.task_kind is unsupported")
+        if (
+            node["task_kind"] == "barrier" and node["assignee"] is not None
+        ) or (
+            node["task_kind"] != "barrier" and node["assignee"] is None
+        ):
+            raise ManagedGraphValidationError(
+                f"{label}.assignee does not match managed task role"
+            )
+        for key in ("task_generation", "task_run_generation"):
+            if (
+                isinstance(node[key], bool)
+                or not isinstance(node[key], int)
+                or node[key] < 1
+            ):
+                raise ManagedGraphValidationError(f"{label}.{key} must be an integer >= 1")
+        if not isinstance(node["mutating"], bool):
+            raise ManagedGraphValidationError(f"{label}.mutating must be boolean")
+        if not isinstance(node["resources"], list):
+            raise ManagedGraphValidationError(f"{label}.resources must be a list")
+        resources = [_canonical_resource_key(item) for item in node["resources"]]
+        if resources != sorted(set(resources)):
+            raise ManagedGraphValidationError(
+                f"{label}.resources must be unique and in canonical lexical order"
+            )
+        node["resources"] = resources
+        if not isinstance(node["expected_artifacts"], list):
+            raise ManagedGraphValidationError(
+                f"{label}.expected_artifacts must be a list"
+            )
+        expected_artifacts = [
+            _required_managed_string(item, f"{label}.expected_artifacts")
+            for item in node["expected_artifacts"]
+        ]
+        if expected_artifacts != sorted(set(expected_artifacts)):
+            raise ManagedGraphValidationError(
+                f"{label}.expected_artifacts must be unique and sorted"
+            )
+        if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", item) is None for item in expected_artifacts):
+            raise ManagedGraphValidationError(
+                f"{label}.expected_artifacts contains an unsafe identity"
+            )
+        if node["task_kind"] == "producer" and not expected_artifacts:
+            raise ManagedGraphValidationError(
+                f"{label} producer must seal expected_artifacts"
+            )
+        if node["task_kind"] != "producer" and expected_artifacts:
+            raise ManagedGraphValidationError(
+                f"{label} non-producer cannot seal expected_artifacts"
+            )
+        node["expected_artifacts"] = expected_artifacts
+        if not isinstance(node["notify_targets"], list):
+            raise ManagedGraphValidationError(f"{label}.notify_targets must be a list")
+        node["notify_targets"] = [
+            _validate_notify_target(target, f"{label}.notify_targets[{target_index}]")
+            for target_index, target in enumerate(node["notify_targets"])
+        ]
+        if not isinstance(node["owned_paths"], list):
+            raise ManagedGraphValidationError(f"{label}.owned_paths must be a list")
+        owned_paths = [
+            _canonical_owned_path(item, f"{label}.owned_paths")
+            for item in node["owned_paths"]
+        ]
+        if owned_paths != sorted(set(owned_paths)):
+            raise ManagedGraphValidationError(
+                f"{label}.owned_paths must be unique and in canonical lexical order"
+            )
+        node["owned_paths"] = owned_paths
+
+        workspace_kind = node["workspace_kind"]
+        if workspace_kind not in VALID_WORKSPACE_KINDS:
+            raise ManagedGraphValidationError(f"{label}.workspace_kind is unsupported")
+        if node["mutating"]:
+            if workspace_kind != "worktree":
+                raise ManagedGraphValidationError(f"{label} mutating workspace must be worktree")
+            workspace = _canonical_absolute_path(node["workspace_path"], f"{label}.workspace_path")
+            root = _canonical_absolute_path(node["owning_root_id"], f"{label}.owning_root_id")
+            if workspace == root or Path(root) not in Path(workspace).parents:
+                raise ManagedGraphValidationError(
+                    f"{label}.workspace_path must be a distinct descendant of the owning root"
+                )
+            if Path(workspace).parent != Path(root) / ".worktrees" or Path(
+                workspace
+            ).name != node["task_id"]:
+                raise ManagedGraphValidationError(
+                    f"{label}.workspace_path must be <owning-root>/.worktrees/<task-id>"
+                )
+            if workspace in writer_workspaces:
+                raise ManagedGraphValidationError("mutating workspace paths must be distinct")
+            writer_workspaces.add(workspace)
+            node["workspace_path"] = workspace
+            node["owning_root_id"] = root
+            node["owning_root_sha256"] = _require_sha256(
+                node["owning_root_sha256"], f"{label}.owning_root_sha256"
+            )
+            if node["owning_root_sha256"] != _sha256_text(root):
+                raise ManagedGraphValidationError(
+                    f"{label}.owning_root_sha256 does not bind owning_root_id"
+                )
+            node["base_commit"] = _require_git_oid(node["base_commit"], f"{label}.base_commit")
+            if not owned_paths:
+                raise ManagedGraphValidationError(f"{label} mutating task needs owned_paths")
+        else:
+            if resources or owned_paths:
+                raise ManagedGraphValidationError(
+                    f"{label} nonmutating task cannot declare resources or owned_paths"
+                )
+            if workspace_kind == "worktree":
+                raise ManagedGraphValidationError(f"{label} nonmutating task cannot own a worktree")
+            if workspace_kind == "scratch":
+                for key in (
+                    "workspace_path",
+                    "base_commit",
+                    "owning_root_id",
+                    "owning_root_sha256",
+                ):
+                    if node[key] is not None:
+                        raise ManagedGraphValidationError(
+                            f"{label} scratch workspace authority must be null"
+                        )
+            else:
+                node["workspace_path"] = _canonical_absolute_path(
+                    node["workspace_path"], f"{label}.workspace_path"
+                )
+                node["owning_root_id"] = _canonical_absolute_path(
+                    node["owning_root_id"], f"{label}.owning_root_id"
+                )
+                node["owning_root_sha256"] = _require_sha256(
+                    node["owning_root_sha256"], f"{label}.owning_root_sha256"
+                )
+                if node["owning_root_sha256"] != _sha256_text(node["owning_root_id"]):
+                    raise ManagedGraphValidationError(
+                        f"{label}.owning_root_sha256 does not bind owning_root_id"
+                    )
+                if node["base_commit"] is not None:
+                    node["base_commit"] = _require_git_oid(
+                        node["base_commit"], f"{label}.base_commit"
+                    )
+        if node["task_kind"] == "barrier" and (
+            node["mutating"] or workspace_kind != "scratch"
+        ):
+            raise ManagedGraphValidationError("barrier must be nonmutating scratch work")
+        if node["node_id"] in node_ids or node["task_id"] in task_ids:
+            raise ManagedGraphValidationError("node_id and task_id must be unique")
+        node_ids.add(node["node_id"])
+        task_ids.add(node["task_id"])
+        nodes.append(node)
+
+    if normalized["final_join_node_id"] not in node_ids:
+        raise ManagedGraphValidationError("final_join_node_id is not a graph node")
+    edges: list[dict[str, str]] = []
+    edge_pairs: set[tuple[str, str]] = set()
+    children: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    for index, raw_edge in enumerate(normalized["edges"]):
+        edge = _require_closed_mapping(raw_edge, _MANAGED_GRAPH_EDGE_KEYS, f"edges[{index}]")
+        parent = _required_managed_string(edge["parent_node_id"], f"edges[{index}].parent")
+        child = _required_managed_string(edge["child_node_id"], f"edges[{index}].child")
+        if parent not in node_ids or child not in node_ids or parent == child:
+            raise ManagedGraphValidationError("edge endpoints must be distinct known nodes")
+        pair = (parent, child)
+        if pair in edge_pairs:
+            raise ManagedGraphValidationError("edges must be unique")
+        edge_pairs.add(pair)
+        children[parent].add(child)
+        edges.append({"parent_node_id": parent, "child_node_id": child})
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            raise ManagedGraphValidationError("managed graph contains a cycle")
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for child_id in children[node_id]:
+            visit(child_id)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    for node_id in node_ids:
+        visit(node_id)
+    logical_groups: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        logical_groups.setdefault(node["logical_node_id"], []).append(node)
+    for logical_node_id, group in logical_groups.items():
+        producers = [node for node in group if node["task_kind"] == "producer"]
+        verifiers = [node for node in group if node["task_kind"] == "verifier"]
+        barriers = [node for node in group if node["task_kind"] == "barrier"]
+        if not producers or len(verifiers) != 1 or len(barriers) != 1:
+            raise ManagedGraphValidationError(
+                f"logical node {logical_node_id} must have producers, one verifier, and one barrier"
+            )
+        producer_assignees = {
+            _canonical_assignee(node["assignee"])
+            for node in producers
+            if node["assignee"] is not None
+        }
+        verifier_assignee = _canonical_assignee(verifiers[0]["assignee"])
+        if verifier_assignee is None or verifier_assignee in producer_assignees:
+            raise ManagedGraphValidationError(
+                f"logical node {logical_node_id} verifier must be independent"
+            )
+        sealed_artifacts = producers[0]["expected_artifacts"]
+        if any(node["expected_artifacts"] != sealed_artifacts for node in producers):
+            raise ManagedGraphValidationError(
+                f"logical node {logical_node_id} producers disagree on expected_artifacts"
+            )
+        verifier_node_id = verifiers[0]["node_id"]
+        barrier_node_id = barriers[0]["node_id"]
+        required_internal_edges = {
+            *((node["node_id"], verifier_node_id) for node in producers),
+            (verifier_node_id, barrier_node_id),
+        }
+        if not required_internal_edges.issubset(edge_pairs):
+            raise ManagedGraphValidationError(
+                f"logical node {logical_node_id} internal hard edges are incomplete"
+            )
+    final_join = normalized["final_join_node_id"]
+    final_join_node = next(node for node in nodes if node["node_id"] == final_join)
+    if final_join_node["task_kind"] != "barrier" or children[final_join]:
+        raise ManagedGraphValidationError(
+            "final_join_node_id must name a terminal barrier"
+        )
+    for node_id in node_ids:
+        reachable = {node_id}
+        frontier = [node_id]
+        while frontier:
+            current = frontier.pop()
+            for child_id in children[current]:
+                if child_id not in reachable:
+                    reachable.add(child_id)
+                    frontier.append(child_id)
+        if final_join not in reachable:
+            raise ManagedGraphValidationError(
+                f"node {node_id} does not flow to final_join_node_id"
+            )
+    normalized["nodes"] = nodes
+    normalized["edges"] = edges
+    return normalized
+
+
+def _managed_result_from_request(
+    request: Mapping[str, Any],
+    *,
+    state: str,
+    created_at: int,
+    activated_at: Optional[int],
+) -> dict[str, Any]:
+    task_by_node = {node["node_id"]: node["task_id"] for node in request["nodes"]}
+    node_keys = (
+        "node_id",
+        "logical_node_id",
+        "task_id",
+        "task_kind",
+        "task_generation",
+        "task_run_generation",
+        "mutating",
+        "resources",
+        "expected_artifacts",
+        "workspace_kind",
+        "workspace_path",
+        "base_commit",
+        "owned_paths",
+        "owning_root_id",
+        "owning_root_sha256",
+    )
+    return {
+        "schema": "managed_task_graph_result_v1",
+        "state": state,
+        "board": request["board"],
+        "run_id": request["run_id"],
+        "create_key": request["create_key"],
+        "request_sha256": request["request_sha256"],
+        "graph_sha256": request["graph_sha256"],
+        "graph_generation": request["graph_generation"],
+        "final_join_node_id": request["final_join_node_id"],
+        "nodes": [{key: node[key] for key in node_keys} for node in request["nodes"]],
+        "edges": [
+            {
+                "parent_node_id": edge["parent_node_id"],
+                "child_node_id": edge["child_node_id"],
+                "parent_task_id": task_by_node[edge["parent_node_id"]],
+                "child_task_id": task_by_node[edge["child_node_id"]],
+            }
+            for edge in request["edges"]
+        ],
+        "created_at": created_at,
+        "activated_at": activated_at,
+    }
+
+
+def _assert_managed_board_identity(
+    conn: sqlite3.Connection, board: str
+) -> None:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    actual = Path(str(row["file"] if isinstance(row, sqlite3.Row) else row[2]))
+    expected = kanban_db_path(board=board).expanduser()
+    if not actual.is_absolute() or actual.resolve() != expected.resolve():
+        raise ManagedGraphValidationError(
+            "managed request board does not match the connected database identity"
+        )
+
+
+def _assert_managed_staging_exact(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> None:
+    task_by_node = {node["node_id"]: node["task_id"] for node in request["nodes"]}
+    expected_ids = set(task_by_node.values())
+    authorities = conn.execute(
+        "SELECT * FROM managed_task_authority WHERE create_key=? ORDER BY node_id",
+        (request["create_key"],),
+    ).fetchall()
+    expected_authorities = sorted(
+        (
+            node["task_id"],
+            node["node_id"],
+            node["logical_node_id"],
+            node["task_kind"],
+            int(node["task_generation"]),
+            int(node["task_run_generation"]),
+            _canonical_json(node["expected_artifacts"]),
+            0,
+            1 if node["mutating"] else 0,
+            0,
+        )
+        for node in request["nodes"]
+    )
+    observed_authorities = sorted(
+        (
+            row["task_id"], row["node_id"], row["logical_node_id"],
+            row["task_kind"],
+            int(row["task_generation"]), int(row["task_run_generation"]),
+            row["expected_artifacts"], int(row["claim_frontier_epoch"]),
+            int(row["mutating"]), int(row["claim_generation"]),
+        )
+        for row in authorities
+    )
+    if observed_authorities != expected_authorities:
+        raise ManagedGraphConflictError("managed sealed authority rows changed")
+    task_rows = conn.execute(
+        "SELECT id,title,body,assignee,status,created_by,workspace_kind,"
+        "workspace_path,branch_name,idempotency_key FROM tasks WHERE id IN ("
+        + ",".join("?" * len(expected_ids)) + ")",
+        tuple(sorted(expected_ids)),
+    ).fetchall()
+    observed_tasks = {row["id"]: row for row in task_rows}
+    for node in request["nodes"]:
+        row = observed_tasks.get(node["task_id"])
+        sealed_branch = f"wt/{node['task_id']}" if node["mutating"] else None
+        expected = (
+            node["title"], node["body"], _canonical_assignee(node["assignee"]),
+            "todo", f"hm-loop:{request['run_id']}", node["workspace_kind"],
+            node["workspace_path"], sealed_branch,
+            f"managed:{request['create_key']}:{node['node_id']}",
+        )
+        if row is None or tuple(row[key] for key in (
+            "title", "body", "assignee", "status", "created_by",
+            "workspace_kind", "workspace_path", "branch_name", "idempotency_key",
+        )) != expected:
+            raise ManagedGraphConflictError("managed sealed task rows changed")
+        resources = [
+            item[0] for item in conn.execute(
+                "SELECT resource_key FROM managed_task_resources WHERE task_id=? "
+                "ORDER BY resource_key", (node["task_id"],)
+            ).fetchall()
+        ]
+        if resources != node["resources"]:
+            raise ManagedGraphConflictError("managed sealed resource rows changed")
+        target_columns = (
+            "platform", "chat_id", "thread_id", "user_id", "user_id_alt",
+            "chat_type", "notifier_profile", "delivery_mode", "delivery_metadata",
+        )
+        observed_targets = sorted(
+            (tuple(row[key] for key in target_columns) for row in conn.execute(
+                "SELECT " + ",".join(target_columns)
+                + " FROM kanban_notify_subs WHERE task_id=?",
+                (node["task_id"],),
+            ).fetchall()),
+            key=repr,
+        )
+        expected_targets = sorted(
+            (tuple(target[key] for key in target_columns) for target in node["notify_targets"]),
+            key=repr,
+        )
+        if observed_targets != expected_targets:
+            raise ManagedGraphConflictError("managed sealed notification rows changed")
+    observed_edges = {
+        (row["parent_id"], row["child_id"])
+        for row in conn.execute(
+            "SELECT parent_id,child_id FROM task_links WHERE parent_id IN ("
+            + ",".join("?" * len(expected_ids)) + ") OR child_id IN ("
+            + ",".join("?" * len(expected_ids)) + ")",
+            (*sorted(expected_ids), *sorted(expected_ids)),
+        ).fetchall()
+    }
+    expected_edges = {
+        (task_by_node[edge["parent_node_id"]], task_by_node[edge["child_node_id"]])
+        for edge in request["edges"]
+    }
+    if observed_edges != expected_edges:
+        raise ManagedGraphConflictError("managed sealed hard-edge set changed")
+
+
+def create_managed_task_graph(
+    conn: sqlite3.Connection,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reserve and materialize one immutable managed graph atomically."""
+    normalized = _validate_managed_graph_request(request)
+    _assert_managed_board_identity(conn, normalized["board"])
+    create_key = normalized["create_key"]
+    # Compose with an archive-owned outer materialization transaction when one
+    # already exists; the savepoint is not independently durable.
+    with write_txn(conn, allow_nested=True):
+        replay = conn.execute(
+            "SELECT request_sha256, result_json FROM managed_task_graphs "
+            "WHERE create_key = ?",
+            (create_key,),
+        ).fetchone()
+        if replay is not None:
+            if replay["request_sha256"] != normalized["request_sha256"]:
+                raise ManagedGraphConflictError(
+                    "managed graph create_key was already reserved by unequal bytes"
+                )
+            return json.loads(replay["result_json"])
+        generation_conflict = conn.execute(
+            "SELECT create_key, request_sha256 FROM managed_task_graphs "
+            "WHERE board = ? AND run_id = ? AND graph_generation = ?",
+            (
+                normalized["board"],
+                normalized["run_id"],
+                normalized["graph_generation"],
+            ),
+        ).fetchone()
+        if generation_conflict is not None:
+            raise ManagedGraphConflictError(
+                "managed graph generation was already reserved by another create_key"
+            )
+        now = int(time.time())
+        result = _managed_result_from_request(
+            normalized, state="staged", created_at=now, activated_at=None
+        )
+        conn.execute(
+            "INSERT INTO managed_task_graphs "
+            "(create_key, request_sha256, board, run_id, graph_sha256, "
+            " graph_generation, final_join_node_id, state, request_json, "
+            " result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?, ?)",
+            (
+                create_key,
+                normalized["request_sha256"],
+                normalized["board"],
+                normalized["run_id"],
+                normalized["graph_sha256"],
+                normalized["graph_generation"],
+                normalized["final_join_node_id"],
+                _canonical_json(normalized),
+                _canonical_json(result),
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO managed_graph_frontiers(create_key,frontier_epoch) "
+            "VALUES (?,0)",
+            (create_key,),
+        )
+        task_by_node = {node["node_id"]: node["task_id"] for node in normalized["nodes"]}
+        for node in normalized["nodes"]:
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, title, body, assignee, status, priority, created_by, created_at, "
+                " workspace_kind, workspace_path, branch_name, idempotency_key) "
+                "VALUES (?, ?, ?, ?, 'todo', 0, ?, ?, ?, ?, ?, ?)",
+                (
+                    node["task_id"],
+                    node["title"],
+                    node["body"],
+                    _canonical_assignee(node["assignee"]),
+                    f"hm-loop:{normalized['run_id']}",
+                    now,
+                    node["workspace_kind"],
+                    node["workspace_path"],
+                    f"wt/{node['task_id']}" if node["mutating"] else None,
+                    f"managed:{create_key}:{node['node_id']}",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO managed_task_authority "
+                "(task_id, create_key, node_id, logical_node_id, task_kind, "
+                " task_generation, task_run_generation, expected_artifacts, "
+                " claim_frontier_epoch, mutating) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                (
+                    node["task_id"],
+                    create_key,
+                    node["node_id"],
+                    node["logical_node_id"],
+                    node["task_kind"],
+                    node["task_generation"],
+                    node["task_run_generation"],
+                    _canonical_json(node["expected_artifacts"]),
+                    1 if node["mutating"] else 0,
+                ),
+            )
+            for resource_key in node["resources"]:
+                conn.execute(
+                    "INSERT INTO managed_task_resources "
+                    "(task_id, task_run_generation, resource_key) VALUES (?, ?, ?)",
+                    (node["task_id"], node["task_run_generation"], resource_key),
+                )
+            for target in node["notify_targets"]:
+                conn.execute(
+                    "INSERT INTO kanban_notify_subs "
+                    "(task_id, platform, chat_id, thread_id, user_id, user_id_alt, "
+                    " chat_type, notifier_profile, delivery_mode, delivery_metadata, "
+                    " created_at, last_event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                    (
+                        node["task_id"],
+                        target["platform"],
+                        target["chat_id"],
+                        target["thread_id"],
+                        target["user_id"],
+                        target["user_id_alt"],
+                        target["chat_type"],
+                        target["notifier_profile"],
+                        target["delivery_mode"],
+                        target["delivery_metadata"],
+                        now,
+                    ),
+                )
+            _append_event(
+                conn,
+                node["task_id"],
+                "managed_staged",
+                {
+                    "create_key": create_key,
+                    "node_id": node["node_id"],
+                    "graph_generation": normalized["graph_generation"],
+                },
+            )
+        for edge in normalized["edges"]:
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (
+                    task_by_node[edge["parent_node_id"]],
+                    task_by_node[edge["child_node_id"]],
+                ),
+            )
+        return result
+
+
+def activate_managed_task_graph(
+    conn: sqlite3.Connection,
+    create_key: str,
+    request_sha256: str,
+    graph_sha256: str,
+    graph_generation: int,
+) -> dict[str, Any]:
+    """Flip an exact fully-staged graph generation into runnable state."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM managed_task_graphs WHERE create_key = ?", (create_key,)
+        ).fetchone()
+        if row is None:
+            raise ManagedGraphConflictError("managed graph create_key is unknown")
+        if (
+            row["request_sha256"] != request_sha256
+            or row["graph_sha256"] != graph_sha256
+            or int(row["graph_generation"]) != graph_generation
+        ):
+            raise ManagedGraphConflictError("managed graph activation authority mismatch")
+        request = json.loads(row["request_json"])
+        _assert_managed_board_identity(conn, request["board"])
+        if row["state"] == "active":
+            return json.loads(row["result_json"])
+        if row["state"] != "staged":
+            raise ManagedGraphConflictError("managed graph is not staged")
+        _assert_managed_staging_exact(conn, request)
+        child_nodes = {edge["child_node_id"] for edge in request["edges"]}
+        for node in request["nodes"]:
+            status = "todo" if node["node_id"] in child_nodes else "ready"
+            updated = conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                (status, node["task_id"]),
+            )
+            if updated.rowcount != 1:
+                raise ManagedGraphConflictError("managed task staging state changed")
+            _append_event(
+                conn,
+                node["task_id"],
+                "managed_activated",
+                {"create_key": create_key, "status": status},
+            )
+        activated_at = int(time.time())
+        result = _managed_result_from_request(
+            request,
+            state="active",
+            created_at=int(row["created_at"]),
+            activated_at=activated_at,
+        )
+        conn.execute(
+            "UPDATE managed_task_graphs SET state = 'active', activated_at = ?, "
+            "result_json = ? WHERE create_key = ? AND state = 'staged'",
+            (activated_at, _canonical_json(result), create_key),
+        )
+        return result
+
+
+def get_managed_task_graph(
+    conn: sqlite3.Connection, create_key: str
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT result_json FROM managed_task_graphs WHERE create_key = ?", (create_key,)
+    ).fetchone()
+    return json.loads(row["result_json"]) if row is not None else None
+
+
+def _managed_task_authority_row(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT a.*, g.state AS graph_state, g.graph_sha256, g.graph_generation, "
+        "g.board AS graph_board "
+        "FROM managed_task_authority a "
+        "LEFT JOIN managed_task_graphs g ON g.create_key = a.create_key "
+        "WHERE a.task_id = ?",
+        (task_id,),
+    ).fetchone()
+
+
+def _is_managed_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM managed_task_authority WHERE task_id = ?", (task_id,)
+    ).fetchone() is not None
+
+
+def _assert_generic_managed_mutation_allowed(
+    conn: sqlite3.Connection,
+    task_ids: Iterable[str],
+    authority: object = None,
+) -> None:
+    if authority is _MANAGED_MUTATION_AUTHORITY:
+        return
+    managed = [task_id for task_id in task_ids if _is_managed_task(conn, task_id)]
+    if managed:
+        raise ManagedTaskAuthorityError(
+            "Core-managed task mutation requires private managed authority: "
+            + ", ".join(managed)
+        )
+
+
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
     parents = list(parents)
     if not parents:
@@ -3716,6 +5285,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
@@ -3766,6 +5336,7 @@ def set_model_override(
     running task that's about to be reclaimed/retried is the primary
     rate-limit-recovery flow. Returns True on success.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     model = (model or "").strip() or None
     provider = (provider or "").strip() or None
     if provider and not model:
@@ -3810,6 +5381,7 @@ def set_reasoning_effort(
     override, it takes effect on the NEXT dispatch, so it is settable on a
     running task. Returns True on success.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     effort = normalize_reasoning_effort(effort)
     with write_txn(conn):
         row = conn.execute(
@@ -3837,7 +5409,16 @@ def set_reasoning_effort(
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    _managed_authority: object = None,
+) -> None:
+    _assert_generic_managed_mutation_allowed(
+        conn, (parent_id, child_id), _managed_authority
+    )
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
@@ -3891,7 +5472,16 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    _managed_authority: object = None,
+) -> bool:
+    _assert_generic_managed_mutation_allowed(
+        conn, (parent_id, child_id), _managed_authority
+    )
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
@@ -4332,6 +5922,68 @@ def _append_event(
     )
 
 
+def _release_managed_resources_for_current_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+) -> None:
+    authority = _managed_task_authority_row(conn, task_id)
+    if authority is None:
+        return
+    task_row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task_row is None or task_row["current_run_id"] is None:
+        return
+    run_id = int(task_row["current_run_id"])
+    run_row = conn.execute(
+        "SELECT claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+        (run_id, task_id),
+    ).fetchone()
+    if run_row is None or not run_row["claim_lock"]:
+        raise ManagedTaskAuthorityError("managed run is missing its claim lock")
+    resources = _managed_declared_resources(
+        conn, task_id, int(authority["task_run_generation"])
+    )
+    leases = conn.execute(
+        "SELECT * FROM managed_resource_leases "
+        "WHERE task_id = ? AND task_run_id = ? AND claim_lock = ? "
+        "AND claim_generation = ? AND released_at IS NULL ORDER BY resource_key",
+        (
+            task_id,
+            run_id,
+            run_row["claim_lock"],
+            int(authority["claim_generation"]),
+        ),
+    ).fetchall()
+    if len(leases) != len(resources) or [row["resource_key"] for row in leases] != resources:
+        raise ManagedTaskAuthorityError(
+            "managed run cannot release a substituted or incomplete lease set"
+        )
+    now = int(time.time())
+    for lease in leases:
+        updated = conn.execute(
+            "UPDATE managed_resource_leases SET released_at = ?, release_reason = ? "
+            "WHERE resource_key = ? AND task_id = ? AND task_run_id = ? "
+            "AND claim_lock = ? AND claim_generation = ? AND released_at IS NULL",
+            (
+                now,
+                reason,
+                lease["resource_key"],
+                task_id,
+                run_id,
+                run_row["claim_lock"],
+                int(authority["claim_generation"]),
+            ),
+        )
+        if updated.rowcount != 1:
+            raise ManagedTaskAuthorityError("managed resource release lost its fence")
+        _record_managed_lease_event(
+            conn, lease, kind="released", reason=reason, now=now
+        )
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4358,6 +6010,7 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
+    _release_managed_resources_for_current_run(conn, task_id, reason=outcome)
     conn.execute(
         """
         UPDATE task_runs
@@ -4573,7 +6226,12 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            acceptable_parent_statuses = (
+                ("done",)
+                if _is_managed_task(conn, task_id)
+                else ("done", "archived")
+            )
+            if all(p["status"] in acceptable_parent_statuses for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -4616,31 +6274,453 @@ def recompute_ready(
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
+    acceptable = ("done",) if _is_managed_task(conn, task_id) else ("done", "archived")
+    placeholders = ",".join("?" * len(acceptable))
     return conn.execute(
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
-        (task_id,),
+        f"AND p.status NOT IN ({placeholders}) LIMIT 1",
+        (task_id, *acceptable),
     ).fetchone() is None
 
 
-def claim_task(
+def _managed_declared_resources(
+    conn: sqlite3.Connection,
+    task_id: str,
+    task_run_generation: int,
+) -> list[str]:
+    rows = conn.execute(
+        "SELECT resource_key FROM managed_task_resources "
+        "WHERE task_id = ? AND task_run_generation = ? ORDER BY resource_key",
+        (task_id, task_run_generation),
+    ).fetchall()
+    return [row["resource_key"] for row in rows]
+
+
+def _managed_lease_owner_is_live(
+    conn: sqlite3.Connection,
+    lease: sqlite3.Row,
+) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM tasks t "
+        "JOIN managed_task_authority a ON a.task_id = t.id "
+        "WHERE t.id = ? AND t.status = 'running' "
+        "AND t.current_run_id = ? AND t.claim_lock = ? "
+        "AND a.claim_generation = ? AND a.task_run_generation = ?",
+        (
+            lease["task_id"],
+            lease["task_run_id"],
+            lease["claim_lock"],
+            lease["claim_generation"],
+            lease["task_run_generation"],
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def _managed_resource_claim_plan(
+    conn: sqlite3.Connection,
+    task_id: str,
+    now: int,
+) -> Optional[tuple[sqlite3.Row, list[str], list[sqlite3.Row], bool]]:
+    authority = _managed_task_authority_row(conn, task_id)
+    if authority is None:
+        return None
+    if authority["graph_state"] != "active":
+        return (authority, [], [], False)
+    resources = _managed_declared_resources(
+        conn, task_id, int(authority["task_run_generation"])
+    )
+    reclaimable: list[sqlite3.Row] = []
+    for resource_key in resources:
+        lease = conn.execute(
+            "SELECT * FROM managed_resource_leases "
+            "WHERE resource_key = ? AND released_at IS NULL",
+            (resource_key,),
+        ).fetchone()
+        if lease is None:
+            continue
+        if int(lease["expires_at"]) >= now or _managed_lease_owner_is_live(conn, lease):
+            return (authority, [], [], False)
+        reclaimable.append(lease)
+    return (authority, resources, reclaimable, True)
+
+
+def _record_managed_lease_event(
+    conn: sqlite3.Connection,
+    lease: Mapping[str, Any],
+    *,
+    kind: str,
+    reason: Optional[str],
+    now: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO managed_resource_lease_events "
+        "(resource_key, task_id, task_run_id, task_run_generation, claim_lock, "
+        " claim_generation, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            lease["resource_key"],
+            lease["task_id"],
+            lease["task_run_id"],
+            lease["task_run_generation"],
+            lease["claim_lock"],
+            lease["claim_generation"],
+            kind,
+            reason,
+            now,
+        ),
+    )
+
+
+def _acquire_managed_resources(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    task_run_generation: int,
+    claim_lock: str,
+    claim_generation: int,
+    expires_at: int,
+    resource_keys: list[str],
+    reclaimable: list[sqlite3.Row],
+    now: int,
+) -> None:
+    for lease in reclaimable:
+        updated = conn.execute(
+            "UPDATE managed_resource_leases SET released_at = ?, "
+            "release_reason = 'expired_reclaimed' "
+            "WHERE resource_key = ? AND released_at IS NULL "
+            "AND task_id = ? AND task_run_id = ? AND claim_generation = ?",
+            (
+                now,
+                lease["resource_key"],
+                lease["task_id"],
+                lease["task_run_id"],
+                lease["claim_generation"],
+            ),
+        )
+        if updated.rowcount != 1:
+            raise ManagedTaskAuthorityError("resource lease changed during reclaim")
+        _record_managed_lease_event(
+            conn, lease, kind="released", reason="expired_reclaimed", now=now
+        )
+    for resource_key in resource_keys:
+        values = {
+            "resource_key": resource_key,
+            "task_id": task_id,
+            "task_run_id": run_id,
+            "task_run_generation": task_run_generation,
+            "claim_lock": claim_lock,
+            "claim_generation": claim_generation,
+        }
+        conn.execute(
+            "INSERT INTO managed_resource_leases "
+            "(resource_key, task_id, task_run_id, task_run_generation, claim_lock, "
+            " claim_generation, acquired_at, expires_at, heartbeat_at, released_at, "
+            " release_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL) "
+            "ON CONFLICT(resource_key) DO UPDATE SET "
+            "task_id=excluded.task_id, task_run_id=excluded.task_run_id, "
+            "task_run_generation=excluded.task_run_generation, "
+            "claim_lock=excluded.claim_lock, claim_generation=excluded.claim_generation, "
+            "acquired_at=excluded.acquired_at, expires_at=excluded.expires_at, "
+            "heartbeat_at=excluded.heartbeat_at, released_at=NULL, release_reason=NULL "
+            "WHERE managed_resource_leases.released_at IS NOT NULL",
+            (
+                resource_key,
+                task_id,
+                run_id,
+                task_run_generation,
+                claim_lock,
+                claim_generation,
+                now,
+                expires_at,
+                now,
+            ),
+        )
+        current = conn.execute(
+            "SELECT * FROM managed_resource_leases WHERE resource_key = ?",
+            (resource_key,),
+        ).fetchone()
+        if (
+            current is None
+            or current["task_id"] != task_id
+            or int(current["task_run_id"]) != run_id
+            or int(current["claim_generation"]) != claim_generation
+        ):
+            raise ManagedTaskAuthorityError("resource lease acquisition lost its fence")
+        _record_managed_lease_event(
+            conn, values, kind="acquired", reason=None, now=now
+        )
+
+
+def managed_task_claim_authority(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT a.create_key, a.node_id, a.task_generation, "
+        "a.task_run_generation, a.claim_generation, a.claim_frontier_epoch, "
+        "t.current_run_id, t.claim_lock "
+        "FROM managed_task_authority a JOIN tasks t ON t.id = a.task_id "
+        "WHERE a.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+@contextlib.contextmanager
+def _managed_host_capacity_lock():
+    """Serialize managed per-profile capacity checks across board databases."""
+    path = kanban_home() / ".managed-profile-capacity.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
+        if _IS_WINDOWS:
+            import msvcrt
+
+            while time.monotonic() < deadline:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError:
+                    time.sleep(_INIT_LOCK_POLL_SECONDS)
+        else:
+            import fcntl
+
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    time.sleep(_INIT_LOCK_POLL_SECONDS)
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _configured_max_in_progress_per_profile() -> tuple[bool, Optional[int]]:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        if config is None:
+            config = {}
+        if not isinstance(config, Mapping):
+            return False, None
+        kanban = config.get("kanban", {})
+        if not isinstance(kanban, Mapping):
+            return False, None
+        raw = kanban.get("max_in_progress_per_profile")
+        if raw is None:
+            return True, None
+        if isinstance(raw, bool):
+            return False, None
+        value = int(raw)
+    except Exception:
+        return False, None
+    return (True, value) if value > 0 else (False, None)
+
+
+def _managed_readonly_profile_count(path: Path, assignee: str) -> Optional[int]:
+    """Read an existing board without creating, migrating, or repairing it."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    readonly: Optional[sqlite3.Connection] = None
+    try:
+        readonly = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
+        readonly.execute("PRAGMA query_only=ON")
+        table = readonly.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ).fetchone()
+        columns = {row[1] for row in readonly.execute("PRAGMA table_info(tasks)")}
+        if table is None or not {"status", "assignee"}.issubset(columns):
+            return None
+        integrity = readonly.execute("PRAGMA quick_check").fetchall()
+        if len(integrity) != 1 or str(integrity[0][0]).lower() != "ok":
+            return None
+        row = readonly.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='running' AND assignee=?",
+            (assignee,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+    except Exception:
+        return None
+    finally:
+        if readonly is not None:
+            readonly.close()
+
+
+def _managed_profile_capacity_available(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str],
+    limit: int,
+) -> bool:
+    authority = _managed_task_authority_row(conn, task_id)
+    task = conn.execute("SELECT assignee FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if authority is None or task is None or not task["assignee"]:
+        return False
+    bound_board = str(authority["graph_board"])
+    if board is not None and board != bound_board:
+        return False
+    try:
+        _assert_managed_board_identity(conn, bound_board)
+        active_boards = list_boards(include_archived=False)
+        current_path = kanban_db_path(board=bound_board).expanduser().resolve()
+    except Exception:
+        return False
+    total = 0
+    saw_current = False
+    visited_paths: set[str] = set()
+    for metadata in active_boards:
+        slug = metadata.get("slug") or DEFAULT_BOARD
+        try:
+            path = kanban_db_path(board=slug).expanduser().resolve()
+            path_key = str(path)
+            if path_key in visited_paths:
+                continue
+            visited_paths.add(path_key)
+            if path == current_path:
+                saw_current = True
+                board_conn = conn
+            else:
+                count = _managed_readonly_profile_count(path, task["assignee"])
+                if count is None:
+                    return False
+                total += count
+                continue
+            row = board_conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status='running' AND assignee=?",
+                (task["assignee"],),
+            ).fetchone()
+            if row is None:
+                return False
+            total += int(row[0])
+        except Exception:
+            return False
+    return saw_current and total < limit
+
+
+def _fire_claimed_lifecycle_hook(
+    task_id: str,
+    *,
+    run_id: Optional[int],
+    assignee: Optional[str],
+    board: Optional[str] = None,
+) -> None:
+    """Publish one durable post-commit claim observation with one payload shape."""
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_claimed",
+        task_id,
+        board=board or get_current_board(),
+        assignee=assignee,
+        run_id=run_id,
+    )
+
+
+def _claim_task_impl(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
+    _managed_capacity_lock_held: bool = False,
+    _managed_claim_authority: object = None,
+    _managed_batch: bool = False,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    is_managed = _is_managed_task(conn, task_id)
+    if is_managed and _managed_claim_authority is not _MANAGED_CLAIM_AUTHORITY:
+        raise ManagedTaskAuthorityError(
+            "Core-managed task claims require the private managed dispatcher"
+        )
+    if is_managed:
+        authority = _managed_task_authority_row(conn, task_id)
+        if authority is None or authority["task_kind"] == "barrier":
+            raise ManagedTaskAuthorityError(
+                "Core-managed success barriers cannot be claimed by workers"
+            )
+    profile_config_ok = True
+    if (
+        isinstance(max_in_progress_per_profile, int)
+        and not isinstance(max_in_progress_per_profile, bool)
+        and max_in_progress_per_profile > 0
+    ):
+        profile_limit = max_in_progress_per_profile
+    elif max_in_progress_per_profile is not None:
+        profile_limit = None
+        profile_config_ok = False
+    elif is_managed:
+        profile_config_ok, profile_limit = _configured_max_in_progress_per_profile()
+    else:
+        profile_limit = None
+    if is_managed and not profile_config_ok:
+        return None
+    if is_managed and profile_limit is not None and not _managed_capacity_lock_held:
+        with _managed_host_capacity_lock() as acquired:
+            if not acquired:
+                return None
+            return _claim_task_impl(
+                conn,
+                task_id,
+                ttl_seconds=ttl_seconds,
+                claimer=claimer,
+                board=board,
+                max_in_progress_per_profile=profile_limit,
+                _managed_capacity_lock_held=True,
+                _managed_claim_authority=_managed_claim_authority,
+            )
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=_managed_batch):
+        managed_plan = _managed_resource_claim_plan(conn, task_id, now)
+        if (
+            managed_plan is not None
+            and profile_limit is not None
+            and not _managed_profile_capacity_available(
+                conn, task_id, board=board, limit=profile_limit
+            )
+        ):
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {"reason": "managed_profile_capacity_unavailable"},
+            )
+            return None
+        if managed_plan is not None and not managed_plan[3]:
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {"reason": "managed_graph_or_resource_unavailable"},
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4649,11 +6729,16 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        acceptable_parent_statuses = (
+            ("done",) if managed_plan is not None else ("done", "archived")
+        )
+        parent_placeholders = ",".join("?" * len(acceptable_parent_statuses))
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
+            "WHERE l.child_id = ? "
+            f"AND p.status NOT IN ({parent_placeholders}) LIMIT 1",
+            (task_id, *acceptable_parent_statuses),
         ).fetchone()
         if undone:
             conn.execute(
@@ -4731,20 +6816,139 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        claim_generation = None
+        managed_resources: list[str] = []
+        if managed_plan is not None:
+            authority, managed_resources, reclaimable, _allowed = managed_plan
+            actual_generation = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM task_runs WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()[0]
+            )
+            prior_generation = int(authority["task_run_generation"])
+            if actual_generation < prior_generation:
+                raise ManagedTaskAuthorityError(
+                    "managed task-run generation regressed"
+                )
+            frontier = conn.execute(
+                "SELECT frontier_epoch FROM managed_graph_frontiers "
+                "WHERE create_key=?",
+                (authority["create_key"],),
+            ).fetchone()
+            if frontier is None:
+                raise ManagedTaskAuthorityError("managed frontier authority is missing")
+            incremented = conn.execute(
+                "UPDATE managed_task_authority SET claim_generation = claim_generation + 1, "
+                "claim_frontier_epoch=?,task_run_generation=? "
+                "WHERE task_id = ? AND claim_generation = ? "
+                "AND task_run_generation=?",
+                (
+                    int(frontier["frontier_epoch"]),
+                    actual_generation,
+                    task_id,
+                    int(authority["claim_generation"]),
+                    prior_generation,
+                ),
+            )
+            if incremented.rowcount != 1:
+                raise ManagedTaskAuthorityError("managed claim generation changed")
+            claim_generation = int(authority["claim_generation"]) + 1
+            if actual_generation != prior_generation:
+                resources_updated = conn.execute(
+                    "UPDATE managed_task_resources SET task_run_generation=? "
+                    "WHERE task_id=? AND task_run_generation=?",
+                    (actual_generation, task_id, prior_generation),
+                )
+                if resources_updated.rowcount != len(managed_resources):
+                    raise ManagedTaskAuthorityError(
+                        "managed resource generation update lost its exact set"
+                    )
+            _acquire_managed_resources(
+                conn,
+                task_id=task_id,
+                run_id=int(run_id),
+                task_run_generation=actual_generation,
+                claim_lock=lock,
+                claim_generation=claim_generation,
+                expires_at=expires,
+                resource_keys=managed_resources,
+                reclaimable=reclaimable,
+                now=now,
+            )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "claim_generation": claim_generation,
+                "task_run_generation": (
+                    actual_generation if claim_generation is not None else None
+                ),
+                "resources": managed_resources or None,
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
-    _fire_kanban_lifecycle_hook(
-        "kanban_task_claimed",
+        if claimed is not None and claim_generation is not None:
+            setattr(claimed, "_managed_claim_generation", claim_generation)
+            setattr(
+                claimed,
+                "_managed_task_run_generation",
+                actual_generation,
+            )
+    # Hook ordering contract (kanban_db.py:189-196): lifecycle hooks must
+    # observe durable board state, so they must run AFTER the outermost
+    # transaction commits. When this claim is part of a managed batch
+    # (dispatcher path), the outer ``write_txn`` at
+    # ``dispatch_managed_frontier`` is still open when control returns
+    # here, so firing the hook now would emit a phantom observer event
+    # for an A that may be rolled back when the second member fails.
+    # Defer the hook to the dispatcher, which fires it after the outer
+    # COMMIT once it knows which members were accepted.
+    if _managed_batch:
+        return claimed
+    _fire_claimed_lifecycle_hook(
         task_id,
-        board=get_current_board(),
         assignee=claimed.assignee if claimed else None,
         run_id=run_id,
     )
     return claimed
+
+
+def claim_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+    board: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
+) -> Optional[Task]:
+    """Claim unmanaged work; Core-managed work is dispatcher-private."""
+    return _claim_task_impl(
+        conn,
+        task_id,
+        ttl_seconds=ttl_seconds,
+        claimer=claimer,
+        board=board,
+        max_in_progress_per_profile=max_in_progress_per_profile,
+    )
+
+
+def _claim_managed_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    **kwargs: Any,
+) -> Optional[Task]:
+    """Claim managed producer/verifier work for the Core dispatcher only."""
+    return _claim_task_impl(
+        conn,
+        task_id,
+        _managed_claim_authority=_MANAGED_CLAIM_AUTHORITY,
+        **kwargs,
+    )
 
 
 def claim_review_task(
@@ -4765,6 +6969,7 @@ def claim_review_task(
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -4939,6 +7144,36 @@ def heartbeat_claim(
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
+        managed_authority = _managed_task_authority_row(conn, task_id)
+        managed_run_id: Optional[int] = None
+        managed_resources: list[str] = []
+        if managed_authority is not None:
+            task_row = conn.execute(
+                "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'running' "
+                "AND claim_lock = ?",
+                (task_id, lock),
+            ).fetchone()
+            if task_row is None or task_row["current_run_id"] is None:
+                return False
+            managed_run_id = int(task_row["current_run_id"])
+            managed_resources = _managed_declared_resources(
+                conn,
+                task_id,
+                int(managed_authority["task_run_generation"]),
+            )
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM managed_resource_leases "
+                "WHERE task_id = ? AND task_run_id = ? AND claim_lock = ? "
+                "AND claim_generation = ? AND released_at IS NULL",
+                (
+                    task_id,
+                    managed_run_id,
+                    lock,
+                    int(managed_authority["claim_generation"]),
+                ),
+            ).fetchone()[0]
+            if int(active_count) != len(managed_resources):
+                return False
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
             "WHERE id = ? AND status = 'running' AND claim_lock = ?",
@@ -4951,6 +7186,24 @@ def heartbeat_claim(
                     "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
                     (expires, run_id),
                 )
+            if managed_authority is not None and managed_run_id is not None:
+                updated_leases = conn.execute(
+                    "UPDATE managed_resource_leases SET expires_at = ?, heartbeat_at = ? "
+                    "WHERE task_id = ? AND task_run_id = ? AND claim_lock = ? "
+                    "AND claim_generation = ? AND released_at IS NULL",
+                    (
+                        expires,
+                        int(time.time()),
+                        task_id,
+                        managed_run_id,
+                        lock,
+                        int(managed_authority["claim_generation"]),
+                    ),
+                )
+                if updated_leases.rowcount != len(managed_resources):
+                    raise ManagedTaskAuthorityError(
+                        "managed resource heartbeat lost its exact lease set"
+                    )
             return True
         return False
 
@@ -5032,6 +7285,31 @@ def release_stale_claims(
                         "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
                         (new_expires, run_id),
                     )
+                    authority = _managed_task_authority_row(conn, row["id"])
+                    if authority is not None:
+                        resources = _managed_declared_resources(
+                            conn,
+                            row["id"],
+                            int(authority["task_run_generation"]),
+                        )
+                        updated_leases = conn.execute(
+                            "UPDATE managed_resource_leases "
+                            "SET expires_at=?, heartbeat_at=? "
+                            "WHERE task_id=? AND task_run_id=? AND claim_lock=? "
+                            "AND claim_generation=? AND released_at IS NULL",
+                            (
+                                new_expires,
+                                now,
+                                row["id"],
+                                int(run_id),
+                                row["claim_lock"],
+                                int(authority["claim_generation"]),
+                            ),
+                        )
+                        if updated_leases.rowcount != len(resources):
+                            raise ManagedTaskAuthorityError(
+                                "managed live-claim extension lost its exact lease set"
+                            )
                 _append_event(
                     conn, row["id"], "claim_extended",
                     {
@@ -5370,6 +7648,9 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    _managed_authority: object = None,
+    _managed_claim_lock: Optional[str] = None,
+    _managed_claim_generation: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5403,6 +7684,9 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    _assert_generic_managed_mutation_allowed(
+        conn, (task_id,), _managed_authority
+    )
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
@@ -5440,6 +7724,25 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        managed_row = _managed_task_authority_row(conn, task_id)
+        if managed_row is not None:
+            current = conn.execute(
+                "SELECT claim_lock, current_run_id FROM tasks WHERE id = ? "
+                "AND status = 'running'",
+                (task_id,),
+            ).fetchone()
+            if (
+                _managed_authority is not _MANAGED_MUTATION_AUTHORITY
+                or current is None
+                or current["claim_lock"] != _managed_claim_lock
+                or int(managed_row["claim_generation"])
+                != _managed_claim_generation
+                or expected_run_id is None
+                or current["current_run_id"] != int(expected_run_id)
+            ):
+                raise ManagedTaskAuthorityError(
+                    "managed completion authority does not match the live task run"
+                )
         # Parent completion is a hard invariant even for direct human review
         # approval. A parent may have been reopened after this task entered
         # ``review`` or ``running``.
@@ -5601,6 +7904,1682 @@ def complete_task(
             summary=(summary if summary is not None else result),
         )
     return True
+
+
+_MANAGED_EVIDENCE_KEYS = {
+    "schema", "task_id", "task_run_id", "task_kind", "claim_generation",
+    "receipt_kind", "payload", "receipt_sha256",
+}
+_MANAGED_MUTATION_EVIDENCE_KEYS = {
+    "base_commit", "head_commit", "tree_oid", "patch_sha256",
+    "changed_paths", "checks", "artifacts",
+}
+_MANAGED_VERIFICATION_EVIDENCE_KEYS = {
+    "subject_receipts", "verdict", "report_sha256",
+}
+_MANAGED_OBSERVATION_EVIDENCE_KEYS = {
+    "parent_receipts", "tree_oid", "checks", "artifacts",
+}
+_MANAGED_AGGREGATION_EVIDENCE_KEYS = {
+    "parent_receipts", "result_sha256",
+}
+
+
+def _validate_managed_named_artifacts(
+    authority: sqlite3.Row, value: object
+) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ManagedTaskAuthorityError("managed named artifacts must be a list")
+    artifacts: list[dict[str, str]] = []
+    try:
+        for index, item in enumerate(value):
+            artifact = _require_closed_mapping(
+                item,
+                {"artifact_identity", "artifact_path", "artifact_sha256"},
+                f"artifacts[{index}]",
+            )
+            artifacts.append(
+                {
+                    "artifact_identity": _required_managed_string(
+                        artifact["artifact_identity"], "artifact_identity"
+                    ),
+                    "artifact_sha256": _require_sha256(
+                        artifact["artifact_sha256"], "artifact_sha256"
+                    ),
+                    "artifact_path": _canonical_owned_path(
+                        artifact["artifact_path"], "artifact_path"
+                    ),
+                }
+            )
+        expected = json.loads(str(authority["expected_artifacts"]))
+    except (json.JSONDecodeError, ManagedGraphValidationError) as exc:
+        raise ManagedTaskAuthorityError(
+            f"managed named artifacts are invalid: {exc}"
+        ) from exc
+    if (
+        not artifacts
+        or artifacts != sorted(artifacts, key=lambda item: item["artifact_identity"])
+        or len({item["artifact_identity"] for item in artifacts}) != len(artifacts)
+        or len({item["artifact_path"] for item in artifacts}) != len(artifacts)
+        or [item["artifact_identity"] for item in artifacts] != expected
+    ):
+        raise ManagedTaskAuthorityError("managed named artifact coverage differs")
+    return artifacts
+
+
+def _managed_path_is_owned(path: str, owned_paths: Sequence[str]) -> bool:
+    return any(path == owner or path.startswith(owner.rstrip("/") + "/") for owner in owned_paths)
+
+
+def _managed_git_bytes(
+    workspace: Path, arguments: Sequence[str], *, label: str
+) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), *arguments],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ManagedTaskAuthorityError(f"managed Git {label} is unavailable")
+    return completed.stdout
+
+
+def _managed_git_text(
+    workspace: Path, arguments: Sequence[str], *, label: str
+) -> str:
+    try:
+        return _managed_git_bytes(workspace, arguments, label=label).decode(
+            "utf-8", errors="strict"
+        ).strip()
+    except UnicodeDecodeError as exc:
+        raise ManagedTaskAuthorityError(
+            f"managed Git {label} is not UTF-8"
+        ) from exc
+
+
+def _validate_managed_artifact_bytes(
+    *,
+    workspace: Path,
+    artifacts: Sequence[Mapping[str, str]],
+    owned_paths: Sequence[str],
+    require_owned: bool,
+) -> None:
+    workspace_resolved = workspace.resolve(strict=True)
+    for artifact in artifacts:
+        relative = str(artifact["artifact_path"])
+        if require_owned and not _managed_path_is_owned(relative, owned_paths):
+            raise ManagedTaskAuthorityError("managed artifact path is unowned")
+        candidate = workspace_resolved.joinpath(*PurePosixPath(relative).parts)
+        current = workspace_resolved
+        for part in PurePosixPath(relative).parts:
+            current /= part
+            if current.is_symlink():
+                raise ManagedTaskAuthorityError("managed artifact path traverses a symlink")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise ManagedTaskAuthorityError("managed artifact bytes are missing") from exc
+        if workspace_resolved not in resolved.parents or not resolved.is_file():
+            raise ManagedTaskAuthorityError("managed artifact path is ambiguous")
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        if digest != artifact["artifact_sha256"]:
+            raise ManagedTaskAuthorityError("managed artifact byte hash differs")
+
+
+def _validate_managed_workspace_evidence(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    task_run_id: int,
+    node: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    artifacts: Sequence[Mapping[str, str]],
+    mutating: bool,
+) -> None:
+    run = conn.execute(
+        "SELECT workspace_start_commit,workspace_start_tree,"
+        "workspace_authority_sha256 FROM task_runs WHERE id=? AND task_id=? "
+        "AND status IN ('running','done')",
+        (int(task_run_id), task_id),
+    ).fetchone()
+    if (
+        run is None
+        or not run["workspace_start_commit"]
+        or not run["workspace_start_tree"]
+        or run["workspace_authority_sha256"]
+        != _sha256_text(_canonical_json(dict(node)))
+    ):
+        raise ManagedTaskAuthorityError("managed workspace provenance is missing")
+    workspace = Path(str(node.get("workspace_path") or ""))
+    try:
+        workspace = workspace.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise ManagedTaskAuthorityError("managed workspace is unavailable") from exc
+    if _git_toplevel(workspace) != workspace:
+        raise ManagedTaskAuthorityError("managed workspace repository identity differs")
+    if _managed_git_bytes(
+        workspace, ["status", "--porcelain=v1", "-z"], label="status"
+    ):
+        raise ManagedTaskAuthorityError("managed workspace is not clean")
+    head_commit = _managed_git_text(
+        workspace, ["rev-parse", "--verify", "HEAD^{commit}"], label="HEAD"
+    )
+    head_tree = _managed_git_text(
+        workspace, ["rev-parse", "--verify", f"{head_commit}^{{tree}}"], label="tree"
+    )
+    declared_tree = _require_git_oid(payload.get("tree_oid"), "tree_oid")
+    if head_tree != declared_tree:
+        raise ManagedTaskAuthorityError("managed evidence tree differs from worktree")
+    owned_paths = list(node.get("owned_paths") or [])
+    if mutating:
+        base_commit = _managed_git_text(
+            workspace,
+            ["rev-parse", "--verify", f"{payload.get('base_commit')}^{{commit}}"],
+            label="base commit",
+        )
+        declared_head = _managed_git_text(
+            workspace,
+            ["rev-parse", "--verify", f"{payload.get('head_commit')}^{{commit}}"],
+            label="head commit",
+        )
+        if (
+            base_commit != node.get("base_commit")
+            or base_commit != run["workspace_start_commit"]
+            or declared_head != head_commit
+        ):
+            raise ManagedTaskAuthorityError("managed evidence commit authority differs")
+        if not _git_is_ancestor(workspace, base_commit, head_commit):
+            raise ManagedTaskAuthorityError("managed evidence head escaped frozen base")
+        changed_raw = _managed_git_bytes(
+            workspace,
+            [
+                "diff", "--name-only", "-z", "--no-renames", base_commit,
+                head_commit, "--",
+            ],
+            label="changed paths",
+        )
+        try:
+            actual_changed = sorted(
+                path.decode("utf-8", errors="strict")
+                for path in changed_raw.split(b"\0")
+                if path
+            )
+        except UnicodeDecodeError as exc:
+            raise ManagedTaskAuthorityError(
+                "managed changed path is not UTF-8"
+            ) from exc
+        if (
+            actual_changed != payload.get("changed_paths")
+            or any(not _managed_path_is_owned(path, owned_paths) for path in actual_changed)
+        ):
+            raise ManagedTaskAuthorityError("managed evidence changed paths differ")
+        patch = _managed_git_bytes(
+            workspace,
+            [
+                "diff", "--binary", "--full-index", "--no-ext-diff",
+                base_commit, head_commit, "--", *owned_paths,
+            ],
+            label="patch",
+        )
+        if hashlib.sha256(patch).hexdigest() != payload.get("patch_sha256"):
+            raise ManagedTaskAuthorityError("managed evidence patch hash differs")
+    elif (
+        head_commit != run["workspace_start_commit"]
+        or head_tree != run["workspace_start_tree"]
+    ):
+        raise ManagedTaskAuthorityError("managed observation workspace changed")
+    _validate_managed_artifact_bytes(
+        workspace=workspace,
+        artifacts=artifacts,
+        owned_paths=owned_paths,
+        require_owned=mutating,
+    )
+
+
+def _validate_managed_passed_checks(
+    value: object, artifacts: Sequence[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    by_identity = {
+        artifact["artifact_identity"]: artifact for artifact in artifacts
+    }
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(
+            not isinstance(check, Mapping)
+            or set(check)
+            != {
+                "name", "status", "artifact_identity", "receipt_sha256",
+            }
+            or not isinstance(check["name"], str)
+            or not check["name"].strip()
+            or check["status"] != "passed"
+            or check["artifact_identity"] not in by_identity
+            or check["receipt_sha256"]
+            != by_identity[check["artifact_identity"]]["artifact_sha256"]
+            for check in value
+        )
+    ):
+        raise ManagedTaskAuthorityError("managed evidence checks are incomplete")
+    normalized = [dict(check) for check in value]
+    if normalized != sorted(normalized, key=lambda item: item["name"]) or len(
+        {item["name"] for item in normalized}
+    ) != len(normalized) or len(
+        {item["artifact_identity"] for item in normalized}
+    ) != len(normalized):
+        raise ManagedTaskAuthorityError("managed evidence checks are not canonical")
+    return normalized
+
+
+def _validate_managed_parent_receipts(
+    conn: sqlite3.Connection,
+    parents: object,
+    parent_ids: list[str],
+) -> None:
+    if not isinstance(parents, list) or sorted(
+        item.get("task_id") for item in parents if isinstance(item, Mapping)
+    ) != parent_ids:
+        raise ManagedTaskAuthorityError("managed evidence parent set differs")
+    try:
+        for parent in parents:
+            if set(parent) != {"task_id", "task_run_id", "receipt_sha256"}:
+                raise ManagedTaskAuthorityError("managed evidence parent is not exact")
+            _require_sha256(parent["receipt_sha256"], "parent receipt")
+            prior = conn.execute(
+                "SELECT metadata FROM task_runs WHERE id=? AND task_id=? AND status='done'",
+                (parent["task_run_id"], parent["task_id"]),
+            ).fetchone()
+            prior_meta = json.loads(prior["metadata"]) if prior and prior["metadata"] else {}
+            if prior_meta.get("managed_evidence", {}).get("receipt_sha256") != parent["receipt_sha256"]:
+                raise ManagedTaskAuthorityError("managed evidence parent receipt differs")
+    except (KeyError, TypeError, json.JSONDecodeError, ManagedGraphValidationError) as exc:
+        raise ManagedTaskAuthorityError(
+            f"managed evidence parent receipt is invalid: {exc}"
+        ) from exc
+
+
+def _validate_managed_completion_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_generation: int,
+    task_run_id: int,
+    evidence: object,
+) -> dict[str, Any]:
+    try:
+        receipt = _require_closed_mapping(
+            evidence, _MANAGED_EVIDENCE_KEYS, "managed completion evidence"
+        )
+    except ManagedGraphValidationError as exc:
+        raise ManagedTaskAuthorityError(f"managed evidence invalid: {exc}") from exc
+    authority = _managed_task_authority_row(conn, task_id)
+    if authority is None:
+        raise ManagedTaskAuthorityError("managed evidence has no task authority")
+    if (
+        receipt["schema"] != "managed_task_evidence_v1"
+        or receipt["task_id"] != task_id
+        or receipt["task_run_id"] != task_run_id
+        or receipt["task_kind"] != authority["task_kind"]
+        or receipt["claim_generation"] != claim_generation
+        or not isinstance(receipt["payload"], Mapping)
+    ):
+        raise ManagedTaskAuthorityError("managed evidence identity is not exact")
+    payload = dict(receipt["payload"])
+    try:
+        receipt_sha = _require_sha256(receipt["receipt_sha256"], "receipt_sha256")
+    except ManagedGraphValidationError as exc:
+        raise ManagedTaskAuthorityError(f"managed evidence invalid: {exc}") from exc
+    receipt_preimage = dict(receipt)
+    receipt_preimage.pop("receipt_sha256")
+    if receipt_sha != _sha256_text(_canonical_json(receipt_preimage)):
+        raise ManagedTaskAuthorityError("managed evidence receipt hash differs")
+    node = _managed_workspace_authority(conn, task_id)
+    if node is None:
+        raise ManagedTaskAuthorityError("managed evidence node authority is missing")
+    parent_ids = sorted(
+        row[0] for row in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id=? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+    )
+    if bool(authority["mutating"]):
+        if receipt["receipt_kind"] != "mutation" or set(payload) != _MANAGED_MUTATION_EVIDENCE_KEYS:
+            raise ManagedTaskAuthorityError("managed mutation evidence is not exact")
+        try:
+            for key in ("base_commit", "head_commit", "tree_oid"):
+                _require_git_oid(payload[key], key)
+            _require_sha256(payload["patch_sha256"], "patch_sha256")
+            changed = [_canonical_owned_path(item, "changed_paths") for item in payload["changed_paths"]]
+            artifacts = _validate_managed_named_artifacts(
+                authority, payload["artifacts"]
+            )
+        except (KeyError, TypeError, ManagedGraphValidationError) as exc:
+            raise ManagedTaskAuthorityError(f"managed mutation evidence invalid: {exc}") from exc
+        checks = payload["checks"]
+        if (
+            payload["base_commit"] != node["base_commit"]
+            or changed != sorted(set(changed))
+            or any(
+                not _managed_path_is_owned(path, node["owned_paths"])
+                for path in changed
+            )
+            or (
+                not changed
+                and (
+                    payload["head_commit"] != payload["base_commit"]
+                    or payload["patch_sha256"]
+                    != hashlib.sha256(b"").hexdigest()
+                )
+            )
+            or (changed and payload["head_commit"] == payload["base_commit"])
+        ):
+            raise ManagedTaskAuthorityError("managed mutation evidence is incomplete")
+        _validate_managed_passed_checks(checks, artifacts)
+        _validate_managed_workspace_evidence(
+            conn,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            node=node,
+            payload=payload,
+            artifacts=artifacts,
+            mutating=True,
+        )
+    elif authority["task_kind"] == "producer":
+        if (
+            receipt["receipt_kind"] != "observation"
+            or set(payload) != _MANAGED_OBSERVATION_EVIDENCE_KEYS
+        ):
+            raise ManagedTaskAuthorityError("managed observation evidence is not exact")
+        try:
+            _require_git_oid(payload["tree_oid"], "tree_oid")
+            artifacts = _validate_managed_named_artifacts(
+                authority, payload["artifacts"]
+            )
+            _validate_managed_passed_checks(payload["checks"], artifacts)
+            _validate_managed_parent_receipts(
+                conn, payload["parent_receipts"], parent_ids
+            )
+        except (KeyError, TypeError, ManagedGraphValidationError) as exc:
+            raise ManagedTaskAuthorityError(
+                f"managed observation evidence is invalid: {exc}"
+            ) from exc
+        _validate_managed_workspace_evidence(
+            conn,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            node=node,
+            payload=payload,
+            artifacts=artifacts,
+            mutating=False,
+        )
+    elif authority["task_kind"] == "verifier":
+        if receipt["receipt_kind"] != "verification" or set(payload) != _MANAGED_VERIFICATION_EVIDENCE_KEYS:
+            raise ManagedTaskAuthorityError("managed verification evidence is not exact")
+        subjects = payload.get("subject_receipts")
+        if (
+            payload.get("verdict") != "PASS"
+            or not isinstance(subjects, list)
+            or not subjects
+            or sorted(item.get("task_id") for item in subjects if isinstance(item, Mapping)) != parent_ids
+        ):
+            raise ManagedTaskAuthorityError("managed verification evidence is incomplete")
+        try:
+            _require_sha256(payload["report_sha256"], "report_sha256")
+            for subject in subjects:
+                if set(subject) != {"task_id", "task_run_id", "receipt_sha256"}:
+                    raise ManagedTaskAuthorityError("managed verification subject is not exact")
+                _require_sha256(subject["receipt_sha256"], "subject receipt")
+                prior = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id=? AND task_id=? AND status='done'",
+                    (subject["task_run_id"], subject["task_id"]),
+                ).fetchone()
+                prior_meta = json.loads(prior["metadata"]) if prior and prior["metadata"] else {}
+                if prior_meta.get("managed_evidence", {}).get("receipt_sha256") != subject["receipt_sha256"]:
+                    raise ManagedTaskAuthorityError("managed verification subject receipt differs")
+        except (KeyError, TypeError, json.JSONDecodeError, ManagedGraphValidationError) as exc:
+            raise ManagedTaskAuthorityError(f"managed verification evidence invalid: {exc}") from exc
+    else:
+        if receipt["receipt_kind"] != "aggregation" or set(payload) != _MANAGED_AGGREGATION_EVIDENCE_KEYS:
+            raise ManagedTaskAuthorityError("managed aggregation evidence is not exact")
+        try:
+            _require_sha256(payload["result_sha256"], "result_sha256")
+            _validate_managed_parent_receipts(
+                conn, payload.get("parent_receipts"), parent_ids
+            )
+        except (KeyError, TypeError, json.JSONDecodeError, ManagedGraphValidationError) as exc:
+            raise ManagedTaskAuthorityError(f"managed aggregation evidence invalid: {exc}") from exc
+    return receipt
+
+
+def complete_managed_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    claim_lock: str,
+    claim_generation: int,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    evidence: object = None,
+) -> bool:
+    """Complete the exact live managed task-run and release its leases."""
+    authority = managed_task_claim_authority(conn, task_id)
+    if authority is None:
+        raise ManagedTaskAuthorityError("task is not Core-managed")
+    task_kind = conn.execute(
+        "SELECT task_kind FROM managed_task_authority WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    if task_kind is not None and task_kind["task_kind"] == "barrier":
+        raise ManagedTaskAuthorityError(
+            "managed success barriers require Core-local finalization"
+        )
+    if (
+        authority["claim_lock"] != claim_lock
+        or int(authority["claim_generation"]) != int(claim_generation)
+        or authority["current_run_id"] is None
+    ):
+        raise ManagedTaskAuthorityError("managed completion authority is stale")
+    receipt = _validate_managed_completion_evidence(
+        conn,
+        task_id,
+        int(claim_generation),
+        int(authority["current_run_id"]),
+        evidence,
+    )
+    completion_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    existing_receipt = completion_metadata.get("managed_evidence")
+    if existing_receipt is not None and existing_receipt != receipt:
+        raise ManagedTaskAuthorityError("managed evidence metadata conflicts")
+    completion_metadata["managed_evidence"] = receipt
+    return complete_task(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=completion_metadata,
+        expected_run_id=int(authority["current_run_id"]),
+        _managed_authority=_MANAGED_MUTATION_AUTHORITY,
+        _managed_claim_lock=claim_lock,
+        _managed_claim_generation=int(claim_generation),
+    )
+
+
+_MANAGED_ARTIFACT_AUTHORITY_READ_KEYS = {
+    "schema",
+    "run_id",
+    "board",
+    "node_id",
+    "attempt_no",
+    "task_id",
+    "task_run_id",
+    "task_run_generation",
+    "graph_sha256",
+    "graph_generation",
+    "claim_frontier_epoch",
+}
+
+
+def _managed_done_evidence(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    task_run_id: Optional[int] = None,
+) -> tuple[sqlite3.Row, dict[str, Any]]:
+    parameters: tuple[Any, ...]
+    if task_run_id is None:
+        sql = (
+            "SELECT * FROM task_runs WHERE task_id=? AND status='done' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        parameters = (task_id,)
+    else:
+        sql = "SELECT * FROM task_runs WHERE id=? AND task_id=? AND status='done'"
+        parameters = (int(task_run_id), task_id)
+    row = conn.execute(sql, parameters).fetchone()
+    if row is None or not row["metadata"]:
+        raise ManagedTaskAuthorityError("managed done evidence is missing")
+    try:
+        metadata = json.loads(row["metadata"])
+        evidence = metadata["managed_evidence"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ManagedTaskAuthorityError("managed done evidence is malformed") from exc
+    if not isinstance(evidence, dict):
+        raise ManagedTaskAuthorityError("managed done evidence is malformed")
+    receipt_preimage = dict(evidence)
+    receipt_sha256 = receipt_preimage.pop("receipt_sha256", None)
+    if receipt_sha256 != _sha256_text(_canonical_json(receipt_preimage)):
+        raise ManagedTaskAuthorityError("managed done evidence receipt is forged")
+    return row, evidence
+
+
+def _managed_terminal_event_id(
+    conn: sqlite3.Connection, task_id: str, task_run_id: int
+) -> str:
+    row = conn.execute(
+        "SELECT id FROM task_events WHERE task_id=? AND run_id=? "
+        "AND kind='completed' ORDER BY id DESC LIMIT 1",
+        (task_id, int(task_run_id)),
+    ).fetchone()
+    if row is None:
+        raise ManagedTaskAuthorityError("managed terminal event is missing")
+    return f"event-{int(row['id'])}"
+
+
+def read_managed_artifact_authority(
+    conn: sqlite3.Connection,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read exact producer, verifier, and tree authority from sealed Core rows."""
+    value = _require_closed_mapping(
+        request,
+        _MANAGED_ARTIFACT_AUTHORITY_READ_KEYS,
+        "managed artifact authority read",
+    )
+    if value["schema"] != "hm-loop-managed-artifact-authority-read/v1":
+        raise ManagedGraphValidationError(
+            "unsupported managed artifact authority read schema"
+        )
+    for key in ("run_id", "board", "node_id", "task_id"):
+        value[key] = _required_managed_string(value[key], key)
+    for key in ("graph_sha256",):
+        value[key] = _require_sha256(value[key], key)
+    for key in (
+        "attempt_no",
+        "task_run_id",
+        "task_run_generation",
+        "graph_generation",
+        "claim_frontier_epoch",
+    ):
+        minimum = 0 if key == "claim_frontier_epoch" else 1
+        if (
+            isinstance(value[key], bool)
+            or not isinstance(value[key], int)
+            or value[key] < minimum
+        ):
+            raise ManagedGraphValidationError(f"{key} is invalid")
+    _assert_managed_board_identity(conn, value["board"])
+    authority = conn.execute(
+        "SELECT a.*,g.board,g.run_id,g.graph_sha256,g.graph_generation,g.state "
+        "FROM managed_task_authority AS a "
+        "JOIN managed_task_graphs AS g ON g.create_key=a.create_key "
+        "WHERE a.task_id=?",
+        (value["task_id"],),
+    ).fetchone()
+    expected_tuple = (
+        value["run_id"],
+        value["board"],
+        value["node_id"],
+        value["task_run_generation"],
+        value["graph_sha256"],
+        value["graph_generation"],
+        value["claim_frontier_epoch"],
+    )
+    observed_tuple = (
+        authority["run_id"] if authority else None,
+        authority["board"] if authority else None,
+        authority["logical_node_id"] if authority else None,
+        int(authority["task_run_generation"]) if authority else None,
+        authority["graph_sha256"] if authority else None,
+        int(authority["graph_generation"]) if authority else None,
+        int(authority["claim_frontier_epoch"]) if authority else None,
+    )
+    if (
+        authority is None
+        or authority["state"] != "active"
+        or authority["task_kind"] != "producer"
+        or value["attempt_no"] != int(authority["task_run_generation"])
+        or observed_tuple != expected_tuple
+    ):
+        raise ManagedTaskAuthorityError(
+            "managed artifact authority identity is stale or wrong-stage"
+        )
+    producer_run, producer_evidence = _managed_done_evidence(
+        conn,
+        task_id=value["task_id"],
+        task_run_id=value["task_run_id"],
+    )
+    if (
+        producer_evidence.get("task_kind") != "producer"
+        or producer_evidence.get("task_run_id") != int(producer_run["id"])
+    ):
+        raise ManagedTaskAuthorityError("managed producer evidence identity differs")
+    group_rows = conn.execute(
+        "SELECT a.*,t.status,t.assignee FROM managed_task_authority AS a "
+        "JOIN tasks AS t ON t.id=a.task_id "
+        "WHERE a.create_key=? AND a.logical_node_id=? ORDER BY a.task_id",
+        (authority["create_key"], authority["logical_node_id"]),
+    ).fetchall()
+    producers = [row for row in group_rows if row["task_kind"] == "producer"]
+    verifiers = [row for row in group_rows if row["task_kind"] == "verifier"]
+    barriers = [row for row in group_rows if row["task_kind"] == "barrier"]
+    if (
+        not producers
+        or len(verifiers) != 1
+        or len(barriers) != 1
+        or any(row["status"] != "done" for row in (*producers, *verifiers))
+    ):
+        raise ManagedTaskAuthorityError("managed logical node is not evidence-complete")
+    producer_receipts: list[dict[str, Any]] = []
+    producer_evidence_by_task: dict[str, tuple[sqlite3.Row, dict[str, Any]]] = {}
+    for producer in producers:
+        done = _managed_done_evidence(conn, task_id=str(producer["task_id"]))
+        producer_evidence_by_task[str(producer["task_id"])] = done
+        producer_receipts.append(
+            {
+                "task_id": str(producer["task_id"]),
+                "task_run_id": int(done[0]["id"]),
+                "receipt_sha256": str(done[1]["receipt_sha256"]),
+            }
+        )
+    verifier = verifiers[0]
+    verifier_run, verifier_evidence = _managed_done_evidence(
+        conn, task_id=str(verifier["task_id"])
+    )
+    verification_payload = verifier_evidence.get("payload")
+    if (
+        verifier_evidence.get("receipt_kind") != "verification"
+        or not isinstance(verification_payload, dict)
+        or verification_payload.get("verdict") != "PASS"
+        or verification_payload.get("subject_receipts")
+        != sorted(producer_receipts, key=lambda item: item["task_id"])
+    ):
+        raise ManagedTaskAuthorityError("managed verifier evidence is stale or forged")
+    try:
+        expected_artifacts = json.loads(str(authority["expected_artifacts"]))
+        producer_payload = producer_evidence["payload"]
+        artifacts = producer_payload["artifacts"]
+        checks = _validate_managed_passed_checks(
+            producer_payload["checks"], artifacts
+        )
+        integration_tree = producer_payload["tree_oid"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ManagedTaskAuthorityError(
+            "managed producer artifact evidence is incomplete"
+        ) from exc
+    if (
+        not isinstance(expected_artifacts, list)
+        or not isinstance(artifacts, list)
+        or [item.get("artifact_identity") for item in artifacts]
+        != expected_artifacts
+    ):
+        raise ManagedTaskAuthorityError("managed artifact coverage is incomplete")
+    integration_tree = _require_git_oid(integration_tree, "integration_tree")
+    producer_event_id = _managed_terminal_event_id(
+        conn, value["task_id"], int(producer_run["id"])
+    )
+    receipts: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        receipt_body = {
+            "artifact_identity": _required_managed_string(
+                artifact["artifact_identity"], "artifact_identity"
+            ),
+            "artifact_sha256": _require_sha256(
+                artifact["artifact_sha256"], "artifact_sha256"
+            ),
+            "producer_task_id": value["task_id"],
+            "producer_task_run_id": int(producer_run["id"]),
+            "terminal_event_id": producer_event_id,
+        }
+        receipts.append(
+            {**receipt_body, "receipt_sha256": _sha256_text(_canonical_json(receipt_body))}
+        )
+    receipts.sort(key=lambda item: item["artifact_identity"])
+    evidence_sha256 = _sha256_text(
+        _canonical_json(
+            [
+                {
+                    "artifact_identity": item["artifact_identity"],
+                    "authority_sha256": item["receipt_sha256"],
+                }
+                for item in receipts
+            ]
+        )
+    )
+    verifier_event_id = _managed_terminal_event_id(
+        conn, str(verifier["task_id"]), int(verifier_run["id"])
+    )
+    verdict_body = {
+        "verifier_task_id": str(verifier["task_id"]),
+        "verifier_task_run_id": int(verifier_run["id"]),
+        "verifier_role": str(verifier["assignee"]),
+        "terminal_event_id": verifier_event_id,
+        "decision": "PASS",
+        "evidence_sha256": evidence_sha256,
+        "integration_tree": integration_tree,
+    }
+    verdict = {
+        **verdict_body,
+        "verdict_sha256": _sha256_text(_canonical_json(verdict_body)),
+    }
+    git_body = {
+        "integration_task_id": value["task_id"],
+        "integration_task_run_id": int(producer_run["id"]),
+        "terminal_event_id": producer_event_id,
+        "integration_tree": integration_tree,
+    }
+    git = {**git_body, "receipt_sha256": _sha256_text(_canonical_json(git_body))}
+    result = {
+        "schema": "hm-loop-core-managed-artifact-authority/v1",
+        "run_id": value["run_id"],
+        "board": value["board"],
+        "node_id": value["node_id"],
+        "attempt_no": value["attempt_no"],
+        "task_id": value["task_id"],
+        "task_run_id": value["task_run_id"],
+        "task_run_generation": value["task_run_generation"],
+        "graph_sha256": value["graph_sha256"],
+        "graph_generation": value["graph_generation"],
+        "claim_frontier_epoch": value["claim_frontier_epoch"],
+        "receipts": receipts,
+        "checks": checks,
+        "verdict": verdict,
+        "git": git,
+    }
+    return {**result, "authority_sha256": _sha256_text(_canonical_json(result))}
+
+
+_MANAGED_FRONTIER_READ_KEYS = {
+    "schema", "run_id", "board", "graph_sha256", "graph_generation",
+}
+_MANAGED_FINALIZE_REQUEST_KEYS = {
+    "schema", "request_id", "run_id", "board", "node_id", "attempt_no",
+    "task_id", "task_run_id", "task_run_generation", "success_barrier_id",
+    "graph_sha256", "graph_generation", "claim_frontier_epoch",
+    "frontier_epoch", "decision_id", "decision_sha256", "evidence_sha256",
+    "verdict_sha256", "verifier_task_id", "verifier_task_run_id",
+    "integration_tree", "request_sha256",
+}
+_OWNER_GATES_SCHEMA_VERSION = 15
+_OWNER_GATES_SCHEMA_OBJECT_COUNT = 65
+_OWNER_GATES_SCHEMA_FINGERPRINT = (
+    "e3739c39acc205e0ee3285cff0dbf53e5a9fdff7e40b1978c2f69fef8ff2df64"
+)
+
+
+def _managed_graph_row_for_identity(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    board: str,
+    graph_sha256: str,
+    graph_generation: int,
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT g.*,f.frontier_epoch FROM managed_task_graphs g "
+        "JOIN managed_graph_frontiers f ON f.create_key=g.create_key "
+        "WHERE g.run_id=? AND g.board=? AND g.graph_sha256=? "
+        "AND g.graph_generation=? AND g.state='active'",
+        (run_id, board, graph_sha256, int(graph_generation)),
+    ).fetchone()
+    if row is None:
+        raise ManagedTaskAuthorityError("managed graph frontier identity differs")
+    return row
+
+
+def _managed_logical_groups(
+    conn: sqlite3.Connection, create_key: str
+) -> tuple[dict[str, list[sqlite3.Row]], dict[str, Any]]:
+    graph = conn.execute(
+        "SELECT request_json FROM managed_task_graphs WHERE create_key=?",
+        (create_key,),
+    ).fetchone()
+    if graph is None:
+        raise ManagedTaskAuthorityError("managed graph request is missing")
+    request = json.loads(str(graph["request_json"]))
+    rows = conn.execute(
+        "SELECT a.*,t.status,t.current_run_id,t.assignee FROM managed_task_authority a "
+        "JOIN tasks t ON t.id=a.task_id WHERE a.create_key=? ORDER BY a.node_id",
+        (create_key,),
+    ).fetchall()
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        groups.setdefault(str(row["logical_node_id"]), []).append(row)
+    return groups, request
+
+
+def _managed_frontier_snapshot(
+    conn: sqlite3.Connection, graph: sqlite3.Row
+) -> dict[str, Any]:
+    groups, request = _managed_logical_groups(conn, str(graph["create_key"]))
+    snapshots: list[dict[str, Any]] = []
+    for logical_node_id in sorted(groups):
+        group = groups[logical_node_id]
+        producers = [row for row in group if row["task_kind"] == "producer"]
+        verifiers = [row for row in group if row["task_kind"] == "verifier"]
+        barriers = [row for row in group if row["task_kind"] == "barrier"]
+        if not producers or len(verifiers) != 1 or len(barriers) != 1:
+            raise ManagedTaskAuthorityError("managed logical group authority differs")
+        producer = producers[0]
+        barrier = barriers[0]
+        statuses = {str(row["status"]) for row in group}
+        if barrier["status"] == "done":
+            state = "completed"
+        elif "blocked" in statuses or "triage" in statuses:
+            state = "blocked"
+        elif verifiers[0]["status"] == "done":
+            state = "review"
+        elif "running" in statuses:
+            state = "running"
+        elif any(row["status"] == "ready" for row in producers):
+            state = "ready"
+        else:
+            state = "pending"
+        run = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id=? "
+            "ORDER BY id DESC LIMIT 1",
+            (producer["task_id"],),
+        ).fetchone()
+        if run is None:
+            attempt_no = 0
+            task_run_id = None
+            task_run_generation = 0
+            claim_frontier_epoch = 0
+        else:
+            actual_generation = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM task_runs WHERE task_id=?",
+                    (producer["task_id"],),
+                ).fetchone()[0]
+            )
+            authority_generation = int(producer["task_run_generation"])
+            if authority_generation != actual_generation:
+                raise ManagedTaskAuthorityError(
+                    "managed task-run generation differs from actual task runs"
+                )
+            if (
+                producer["current_run_id"] is not None
+                and int(producer["current_run_id"]) != int(run["id"])
+            ):
+                raise ManagedTaskAuthorityError(
+                    "managed current task run differs from latest task run"
+                )
+            attempt_no = actual_generation
+            task_run_id = int(run["id"])
+            task_run_generation = actual_generation
+            claim_frontier_epoch = int(producer["claim_frontier_epoch"])
+        snapshots.append(
+            {
+                "node_id": logical_node_id,
+                "task_id": str(producer["task_id"]),
+                "success_barrier_id": str(barrier["task_id"]),
+                "state": state,
+                "attempt_no": attempt_no,
+                "task_run_id": task_run_id,
+                "task_run_generation": task_run_generation,
+                "claim_frontier_epoch": claim_frontier_epoch,
+            }
+        )
+    final_internal = str(request["final_join_node_id"])
+    final_node = next(
+        row for rows in groups.values() for row in rows
+        if row["node_id"] == final_internal
+    )
+    return {
+        "schema": "hm-loop-core-managed-frontier-snapshot/v1",
+        "run_id": str(graph["run_id"]),
+        "board": str(graph["board"]),
+        "graph_sha256": str(graph["graph_sha256"]),
+        "graph_generation": int(graph["graph_generation"]),
+        "frontier_epoch": int(graph["frontier_epoch"]),
+        "final_join_node": str(final_node["logical_node_id"]),
+        "terminal_status": None,
+        "nodes": snapshots,
+    }
+
+
+def read_managed_frontier(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Read the exact Core-owned logical frontier without mutating board state."""
+    value = _require_closed_mapping(
+        request, _MANAGED_FRONTIER_READ_KEYS, "managed frontier read"
+    )
+    if value["schema"] != "hm-loop-managed-frontier-read/v1":
+        raise ManagedGraphValidationError("unsupported managed frontier read schema")
+    for key in ("run_id", "board"):
+        value[key] = _required_managed_string(value[key], key)
+    value["graph_sha256"] = _require_sha256(
+        value["graph_sha256"], "graph_sha256"
+    )
+    if (
+        isinstance(value["graph_generation"], bool)
+        or not isinstance(value["graph_generation"], int)
+        or value["graph_generation"] < 1
+    ):
+        raise ManagedGraphValidationError("graph_generation is invalid")
+    _assert_managed_board_identity(conn, value["board"])
+    graph = _managed_graph_row_for_identity(
+        conn,
+        run_id=value["run_id"],
+        board=value["board"],
+        graph_sha256=value["graph_sha256"],
+        graph_generation=value["graph_generation"],
+    )
+    return _managed_frontier_snapshot(conn, graph)
+
+
+_MANAGED_FRONTIER_DISPATCH_KEYS = {
+    "schema", "run_id", "board", "graph_sha256", "graph_generation",
+    "frontier_epoch", "ready_nodes",
+}
+
+
+def dispatch_managed_frontier(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Claim exactly one Core-owned logical ready frontier, fail closed.
+
+    The caller supplies only a previously observed logical frontier.  Core
+    re-reads that frontier under its own authority before claiming producer
+    tasks, so stale, partial, substituted, or capacity-bypassing requests
+    cannot turn into work.  Resource leases and per-profile capacity remain
+    enforced by the private managed claim primitive.
+    """
+    value = _require_closed_mapping(
+        request, _MANAGED_FRONTIER_DISPATCH_KEYS, "managed frontier dispatch"
+    )
+    if value["schema"] != "hm-loop-managed-frontier-dispatch/v1":
+        raise ManagedGraphValidationError("unsupported managed frontier dispatch schema")
+    for key in ("run_id", "board"):
+        value[key] = _required_managed_string(value[key], key)
+    value["graph_sha256"] = _require_sha256(value["graph_sha256"], "graph_sha256")
+    for key in ("graph_generation", "frontier_epoch"):
+        if isinstance(value[key], bool) or not isinstance(value[key], int) or value[key] < 0:
+            raise ManagedGraphValidationError(f"{key} is invalid")
+    if value["graph_generation"] < 1:
+        raise ManagedGraphValidationError("graph_generation is invalid")
+    if (
+        not isinstance(value["ready_nodes"], list)
+        or not value["ready_nodes"]
+        or any(not isinstance(node, str) or not node or node != node.strip() for node in value["ready_nodes"])
+        or value["ready_nodes"] != sorted(set(value["ready_nodes"]))
+    ):
+        raise ManagedGraphValidationError("ready_nodes must be a non-empty sorted unique string list")
+    _assert_managed_board_identity(conn, value["board"])
+    graph = _managed_graph_row_for_identity(
+        conn,
+        run_id=value["run_id"],
+        board=value["board"],
+        graph_sha256=value["graph_sha256"],
+        graph_generation=value["graph_generation"],
+    )
+    if int(graph["frontier_epoch"]) != value["frontier_epoch"]:
+        raise ManagedTaskAuthorityError("managed frontier dispatch epoch is stale")
+    frontier = _managed_frontier_result(conn, graph)
+    if frontier["ready_nodes"] != value["ready_nodes"]:
+        raise ManagedTaskAuthorityError("managed frontier dispatch ready set differs")
+    groups, _ = _managed_logical_groups(conn, str(graph["create_key"]))
+    profile_config_ok, profile_limit = _configured_max_in_progress_per_profile()
+    if not profile_config_ok:
+        raise ManagedTaskAuthorityError("managed profile capacity configuration is unavailable")
+    accepted: list[str] = []
+    deferred: list[str] = []
+    # Hooks that have to fire only AFTER the outer commit, paired with the
+    # run_id observed during the claim. We accumulate these per accepted
+    # logical node so that a partial-group rollback drops the hook list
+    # instead of leaking phantom observer events.
+    deferred_claim_hooks: list[tuple[str, int, Optional[str]]] = []
+    # This lock serializes the cross-board profile-capacity check in every
+    # private claim below.  Claims themselves retain their own Core CAS and
+    # resource-lease enforcement; no caller-provided capacity is accepted.
+    with _managed_host_capacity_lock() as acquired:
+        if not acquired:
+            return {"accepted_nodes": [], "deferred_nodes": list(value["ready_nodes"])}
+        for logical_node_id in value["ready_nodes"]:
+            group = groups.get(logical_node_id)
+            if group is None:
+                raise ManagedTaskAuthorityError("managed frontier logical node differs")
+            producers = sorted(
+                (row for row in group if row["task_kind"] == "producer"),
+                key=lambda row: str(row["task_id"]),
+            )
+            if not producers or any(row["status"] != "ready" for row in producers):
+                deferred.append(logical_node_id)
+                continue
+            # Claim all producer members of one logical node in a single outer
+            # transaction.  A capacity/resource/CAS miss rolls the group back;
+            # never strand a partially claimed fan-out group.
+            group_hooks: list[tuple[str, int, Optional[str]]] = []
+            try:
+                with write_txn(conn):
+                    for producer in producers:
+                        task = _claim_managed_task(
+                            conn,
+                            str(producer["task_id"]),
+                            board=value["board"],
+                            max_in_progress_per_profile=profile_limit,
+                            _managed_capacity_lock_held=True,
+                            _managed_batch=True,
+                        )
+                        if task is None:
+                            raise ManagedTaskAuthorityError(
+                                "managed frontier member unavailable"
+                            )
+                        # _claim_task_impl deferred the kanban_task_claimed
+                        # hook because the outer transaction is still open;
+                        # capture the per-member event payload here so the
+                        # dispatcher can fire them only after this outer
+                        # transaction commits successfully.
+                        claimed_assignee = getattr(task, "assignee", None)
+                        group_hooks.append(
+                            (
+                                str(producer["task_id"]),
+                                int(task.current_run_id or 0),
+                                claimed_assignee
+                                if isinstance(claimed_assignee, str)
+                                else None,
+                            )
+                        )
+            except ManagedTaskAuthorityError as exc:
+                if str(exc) != "managed frontier member unavailable":
+                    raise
+                deferred.append(logical_node_id)
+                continue
+            deferred_claim_hooks.extend(group_hooks)
+            accepted.append(logical_node_id)
+    # Outer transaction has committed. Now fire the deferred lifecycle
+    # hooks so observers only ever see durable board state.
+    board_name = get_current_board()
+    for task_id, run_id, assignee in deferred_claim_hooks:
+        _fire_claimed_lifecycle_hook(
+            task_id,
+            board=board_name,
+            assignee=assignee,
+            run_id=run_id,
+        )
+    return {"accepted_nodes": accepted, "deferred_nodes": deferred}
+
+
+def _managed_frontier_result(
+    conn: sqlite3.Connection, graph: sqlite3.Row
+) -> dict[str, Any]:
+    snapshot = _managed_frontier_snapshot(conn, graph)
+    groups, request = _managed_logical_groups(conn, str(graph["create_key"]))
+    logical_by_internal = {
+        str(node["node_id"]): str(node["logical_node_id"])
+        for node in request["nodes"]
+    }
+    logical_parents = {node_id: set() for node_id in groups}
+    for edge in request["edges"]:
+        parent = logical_by_internal[edge["parent_node_id"]]
+        child = logical_by_internal[edge["child_node_id"]]
+        if parent != child:
+            logical_parents[child].add(parent)
+    states = {node["node_id"]: node["state"] for node in snapshot["nodes"]}
+    ready: list[str] = []
+    active: list[str] = []
+    waiting: list[dict[str, Any]] = []
+    terminal: list[dict[str, str]] = []
+    for node_id in sorted(states):
+        state = states[node_id]
+        unsatisfied = sorted(
+            parent for parent in logical_parents[node_id]
+            if states[parent] != "completed"
+        )
+        if state == "completed":
+            terminal.append({"node_id": node_id, "state": "completed"})
+        elif state in {"running", "review", "claiming"}:
+            active.append(node_id)
+        elif state == "ready" and not unsatisfied:
+            ready.append(node_id)
+        else:
+            waiting.append(
+                {
+                    "node_id": node_id,
+                    "reason": (
+                        "STICKY_WORKER_BLOCK"
+                        if state == "blocked" else "WAITING_PARENT"
+                    ),
+                    "blocking_node_ids": unsatisfied,
+                }
+            )
+    final_join = snapshot["final_join_node"]
+    final_ready = final_join in ready and all(
+        states[parent] == "completed" for parent in logical_parents[final_join]
+    )
+    display = ready or active
+    run_status = (
+        "completed" if states[final_join] == "completed"
+        else "active" if display else "hold"
+    )
+    return {
+        "schema": "hm-loop-dag-frontier-result/v1",
+        "run_id": snapshot["run_id"],
+        "board": snapshot["board"],
+        "graph_sha256": snapshot["graph_sha256"],
+        "graph_generation": snapshot["graph_generation"],
+        "frontier_epoch": snapshot["frontier_epoch"],
+        "ready_nodes": ready,
+        "active_nodes": active,
+        "waiting_nodes": waiting,
+        "terminal_nodes": terminal,
+        "next_phase": display[0] if display else None,
+        "run_status": run_status,
+        "final_join_ready": final_ready,
+    }
+
+
+def _managed_finalize_event(
+    *,
+    event_type: str,
+    run_id: str,
+    node_id: Optional[str],
+    decision_id: Optional[str],
+    graph_sha256: str,
+    graph_generation: int,
+    frontier_epoch: int,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    body = {
+        "schema": "hm-loop-dag-progress-event/v1",
+        "event_type": event_type,
+        "run_id": run_id,
+        "node_id": node_id,
+        "decision_id": decision_id,
+        "graph_sha256": graph_sha256,
+        "graph_generation": graph_generation,
+        "frontier_epoch": frontier_epoch,
+        "payload_sha256": _sha256_text(_canonical_json(dict(payload))),
+    }
+    return {
+        **body,
+        "event_id": f"dag-event-{_sha256_text(_canonical_json(body))[:32]}",
+    }
+
+
+def _managed_finalize_events(
+    *,
+    run_id: str,
+    node_id: str,
+    decision_id: str,
+    success_barrier_id: str,
+    graph_sha256: str,
+    graph_generation: int,
+    frontier_epoch: int,
+    frontier_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    common = {
+        "run_id": run_id,
+        "graph_sha256": graph_sha256,
+        "graph_generation": graph_generation,
+        "frontier_epoch": frontier_epoch,
+    }
+    events = [
+        _managed_finalize_event(
+            event_type="NODE_COMPLETED",
+            node_id=node_id,
+            decision_id=decision_id,
+            payload={"success_barrier_id": success_barrier_id},
+            **common,
+        ),
+        _managed_finalize_event(
+            event_type="FRONTIER_CHANGED",
+            node_id=None,
+            decision_id=None,
+            payload=frontier_result,
+            **common,
+        ),
+    ]
+    conditional_types: list[str] = []
+    if frontier_result["final_join_ready"]:
+        conditional_types.append("FINAL_JOIN_READY")
+    if frontier_result["run_status"] == "hold":
+        conditional_types.extend(("RUN_FRONTIER_EXHAUSTED", "RUN_HOLD"))
+    elif frontier_result["run_status"] == "completed":
+        conditional_types.append("RUN_COMPLETED")
+    events.extend(
+        _managed_finalize_event(
+            event_type=event_type,
+            node_id=None,
+            decision_id=None,
+            payload=frontier_result,
+            **common,
+        )
+        for event_type in conditional_types
+    )
+    return sorted(events, key=lambda item: item["event_id"])
+
+
+def _owner_gates_path() -> Path:
+    """Return the fixed owner profile authority; ambient overrides are ignored."""
+    return Path.home() / ".hermes" / "runtime" / "gates.db"
+
+
+def _normalize_owner_schema_sql(sql: str) -> str:
+    result: list[str] = []
+    quote_end: Optional[str] = None
+    pending_space = False
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote_end is not None:
+            result.append(char)
+            if char == quote_end:
+                if (
+                    quote_end != "]"
+                    and index + 1 < len(sql)
+                    and sql[index + 1] == quote_end
+                ):
+                    result.append(sql[index + 1])
+                    index += 1
+                else:
+                    quote_end = None
+        elif char.isspace():
+            pending_space = bool(result)
+        else:
+            if pending_space and result[-1] != " ":
+                result.append(" ")
+            pending_space = False
+            result.append(char)
+            if char in {"'", '"', "`"}:
+                quote_end = char
+            elif char == "[":
+                quote_end = "]"
+        index += 1
+    return "".join(result).strip()
+
+
+def _validate_owner_gates_schema(conn: sqlite3.Connection) -> None:
+    versions = conn.execute(
+        "SELECT version FROM hm_schema WHERE component='hm-loop'"
+    ).fetchall()
+    if (
+        len(versions) != 1
+        or isinstance(versions[0][0], bool)
+        or versions[0][0] != _OWNER_GATES_SCHEMA_VERSION
+    ):
+        raise ManagedTaskAuthorityError("owner gates schema authority differs")
+    rows = conn.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND (substr(name,1,3)='hm_' "
+        "OR substr(tbl_name,1,3)='hm_') ORDER BY type,name"
+    ).fetchall()
+    inventory = [
+        {
+            "type": str(row["type"]),
+            "name": str(row["name"]),
+            "table": str(row["tbl_name"]),
+            "sql_sha256": _sha256_text(
+                _normalize_owner_schema_sql(str(row["sql"]))
+            ),
+        }
+        for row in rows
+    ]
+    if (
+        len(inventory) != _OWNER_GATES_SCHEMA_OBJECT_COUNT
+        or _sha256_text(_canonical_json(inventory))
+        != _OWNER_GATES_SCHEMA_FINGERPRINT
+    ):
+        raise ManagedTaskAuthorityError("owner gates schema authority differs")
+    quick_check = conn.execute("PRAGMA quick_check").fetchone()
+    if quick_check is None or quick_check[0] != "ok":
+        raise ManagedTaskAuthorityError("owner gates schema authority differs")
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise ManagedTaskAuthorityError("owner gates schema authority differs")
+
+
+def _validate_owner_gates_identity(
+    info: os.stat_result,
+    *,
+    expected_mode: int,
+    directory: bool,
+) -> None:
+    get_uid = getattr(os, "geteuid", None)
+    get_gid = getattr(os, "getegid", None)
+    if get_uid is None or get_gid is None:
+        raise ManagedTaskAuthorityError("owner gates identity is unsupported")
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if (
+        not expected_type(info.st_mode)
+        or info.st_uid != get_uid()
+        or info.st_gid != get_gid()
+        or stat.S_IMODE(info.st_mode) != expected_mode
+        or (not directory and info.st_nlink != 1)
+    ):
+        raise ManagedTaskAuthorityError("owner gates identity differs")
+
+
+@contextlib.contextmanager
+def _open_owner_gates_authority():
+    """Open the exact existing owner v15 authority without side effects."""
+    path = _owner_gates_path()
+    parent = path.parent
+    descriptor: Optional[int] = None
+    owner: Optional[sqlite3.Connection] = None
+    try:
+        if not path.is_absolute():
+            raise ManagedTaskAuthorityError("owner gates identity differs")
+        parent_info = os.lstat(parent)
+        path_info = os.lstat(path)
+        if stat.S_ISLNK(parent_info.st_mode) or stat.S_ISLNK(path_info.st_mode):
+            raise ManagedTaskAuthorityError("owner gates identity differs")
+        if parent.resolve(strict=True) != parent or path.resolve(strict=True) != path:
+            raise ManagedTaskAuthorityError("owner gates identity differs")
+        _validate_owner_gates_identity(
+            parent_info, expected_mode=0o700, directory=True
+        )
+        _validate_owner_gates_identity(
+            path_info, expected_mode=0o600, directory=False
+        )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened_info = os.fstat(descriptor)
+        _validate_owner_gates_identity(
+            opened_info, expected_mode=0o600, directory=False
+        )
+        if (opened_info.st_dev, opened_info.st_ino) != (
+            path_info.st_dev,
+            path_info.st_ino,
+        ):
+            raise ManagedTaskAuthorityError("owner gates identity changed")
+        descriptor_path = next(
+            (
+                candidate
+                for candidate in (
+                    Path(f"/proc/self/fd/{descriptor}"),
+                    Path(f"/dev/fd/{descriptor}"),
+                )
+                if candidate.exists()
+            ),
+            None,
+        )
+        if descriptor_path is None:
+            raise ManagedTaskAuthorityError("owner gates safe open is unsupported")
+        owner = sqlite3.connect(
+            descriptor_path.as_uri() + "?mode=ro&immutable=1",
+            uri=True,
+            timeout=5,
+            isolation_level=None,
+        )
+        owner.row_factory = sqlite3.Row
+        owner.execute("PRAGMA query_only=ON")
+        owner.execute("PRAGMA foreign_keys=ON")
+        owner.execute("PRAGMA busy_timeout=5000")
+        _validate_owner_gates_schema(owner)
+        yield owner
+    except FileNotFoundError as exc:
+        raise ManagedTaskAuthorityError(
+            "owner gates decision database is unavailable"
+        ) from exc
+    except ManagedTaskAuthorityError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise ManagedTaskAuthorityError(
+            "owner gates decision database is unreadable"
+        ) from exc
+    finally:
+        if owner is not None:
+            owner.close()
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _assert_owner_gates_decision(value: Mapping[str, Any]) -> None:
+    with _open_owner_gates_authority() as owner:
+        row = owner.execute(
+            "SELECT decision_sha256,sealed_token_id,sealed_token_sha256 "
+            "FROM hm_gate_decision_refs WHERE hm_loop_run_id=? AND phase_id=? "
+            "AND attempt_no=? AND decision_id=?",
+            (
+                value["run_id"], value["node_id"], value["attempt_no"],
+                value["decision_id"],
+            ),
+        ).fetchone()
+    if row is None or (
+        row["decision_sha256"], row["sealed_token_id"], row["sealed_token_sha256"]
+    ) != (
+        value["decision_sha256"], value["request_id"], value["request_sha256"]
+    ):
+        raise ManagedTaskAuthorityError("owner gates decision authority differs")
+
+
+def finalize_managed_node(
+    conn: sqlite3.Connection, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Consume one owner-local decision and atomically close its success barrier."""
+    value = _require_closed_mapping(
+        request, _MANAGED_FINALIZE_REQUEST_KEYS, "managed finalize request"
+    )
+    if value["schema"] != "hm-loop-managed-finalize-request/v1":
+        raise ManagedGraphValidationError("unsupported managed finalize request schema")
+    for key in (
+        "request_id", "run_id", "board", "node_id", "task_id",
+        "success_barrier_id", "decision_id", "verifier_task_id",
+    ):
+        value[key] = _required_managed_string(value[key], key)
+    for key in (
+        "graph_sha256", "decision_sha256", "evidence_sha256",
+        "verdict_sha256", "request_sha256",
+    ):
+        value[key] = _require_sha256(value[key], key)
+    value["integration_tree"] = _require_git_oid(
+        value["integration_tree"], "integration_tree"
+    )
+    for key in (
+        "attempt_no", "task_run_id", "task_run_generation",
+        "graph_generation", "verifier_task_run_id",
+    ):
+        if isinstance(value[key], bool) or not isinstance(value[key], int) or value[key] < 1:
+            raise ManagedGraphValidationError(f"{key} is invalid")
+    for key in ("claim_frontier_epoch", "frontier_epoch"):
+        if isinstance(value[key], bool) or not isinstance(value[key], int) or value[key] < 0:
+            raise ManagedGraphValidationError(f"{key} is invalid")
+    request_body = {
+        key: item for key, item in value.items()
+        if key not in {"request_id", "request_sha256"}
+    }
+    expected_request_sha = _sha256_text(_canonical_json(request_body))
+    if (
+        value["request_sha256"] != expected_request_sha
+        or value["request_id"] != f"finalize-{expected_request_sha[:32]}"
+    ):
+        raise ManagedTaskAuthorityError("managed finalize request identity differs")
+    replay = conn.execute(
+        "SELECT request_sha256,result_json FROM managed_finalize_tokens "
+        "WHERE request_id=?", (value["request_id"],)
+    ).fetchone()
+    if replay is not None:
+        if replay["request_sha256"] != value["request_sha256"]:
+            raise ManagedGraphConflictError("managed finalize replay bytes differ")
+        return json.loads(str(replay["result_json"]))
+    _assert_managed_board_identity(conn, value["board"])
+    graph = _managed_graph_row_for_identity(
+        conn,
+        run_id=value["run_id"], board=value["board"],
+        graph_sha256=value["graph_sha256"],
+        graph_generation=value["graph_generation"],
+    )
+    groups, _graph_request = _managed_logical_groups(conn, str(graph["create_key"]))
+    group = groups.get(value["node_id"], [])
+    producers = [row for row in group if row["task_kind"] == "producer"]
+    verifiers = [row for row in group if row["task_kind"] == "verifier"]
+    barriers = [row for row in group if row["task_kind"] == "barrier"]
+    producer = next((row for row in producers if row["task_id"] == value["task_id"]), None)
+    if producer is None or len(verifiers) != 1 or len(barriers) != 1:
+        raise ManagedTaskAuthorityError("managed finalize logical authority differs")
+    verifier, barrier = verifiers[0], barriers[0]
+    if (
+        barrier["task_id"] != value["success_barrier_id"]
+        or barrier["assignee"] is not None
+        or verifier["task_id"] != value["verifier_task_id"]
+        or int(producer["task_run_generation"]) != value["task_run_generation"]
+        or value["attempt_no"] != value["task_run_generation"]
+        or int(producer["claim_frontier_epoch"]) != value["claim_frontier_epoch"]
+    ):
+        raise ManagedTaskAuthorityError("managed finalize task authority differs")
+    artifact_authority = read_managed_artifact_authority(
+        conn,
+        {
+            "schema": "hm-loop-managed-artifact-authority-read/v1",
+            "run_id": value["run_id"], "board": value["board"],
+            "node_id": value["node_id"], "attempt_no": value["attempt_no"],
+            "task_id": value["task_id"], "task_run_id": value["task_run_id"],
+            "task_run_generation": value["task_run_generation"],
+            "graph_sha256": value["graph_sha256"],
+            "graph_generation": value["graph_generation"],
+            "claim_frontier_epoch": value["claim_frontier_epoch"],
+        },
+    )
+    verdict = artifact_authority["verdict"]
+    if (
+        verdict["evidence_sha256"] != value["evidence_sha256"]
+        or verdict["verdict_sha256"] != value["verdict_sha256"]
+        or verdict["verifier_task_id"] != value["verifier_task_id"]
+        or verdict["verifier_task_run_id"] != value["verifier_task_run_id"]
+        or artifact_authority["git"]["integration_tree"] != value["integration_tree"]
+    ):
+        raise ManagedTaskAuthorityError("managed finalize evidence authority differs")
+    decision_body = {
+        "claim_frontier_epoch": value["claim_frontier_epoch"],
+        "graph_sha256": value["graph_sha256"],
+        "integration_tree": value["integration_tree"],
+        "node_id": value["node_id"], "run_id": value["run_id"],
+        "task_run_generation": value["task_run_generation"],
+        "verdict_sha256": value["verdict_sha256"],
+    }
+    expected_decision_sha = _sha256_text(_canonical_json(decision_body))
+    if (
+        value["decision_sha256"] != expected_decision_sha
+        or value["decision_id"] != f"decision-{expected_decision_sha[:24]}"
+    ):
+        raise ManagedTaskAuthorityError("managed finalize decision identity differs")
+    _assert_owner_gates_decision(value)
+    with write_txn(conn):
+        conflict = conn.execute(
+            "SELECT request_id,request_sha256,result_json FROM managed_finalize_tokens "
+            "WHERE create_key=? AND logical_node_id=? AND task_run_generation=? "
+            "AND claim_frontier_epoch=?",
+            (
+                graph["create_key"], value["node_id"],
+                value["task_run_generation"], value["claim_frontier_epoch"],
+            ),
+        ).fetchone()
+        if conflict is not None:
+            if (
+                conflict["request_id"] == value["request_id"]
+                and conflict["request_sha256"] == value["request_sha256"]
+            ):
+                return json.loads(str(conflict["result_json"]))
+            raise ManagedGraphConflictError("managed finalize attempt already differs")
+        frontier = conn.execute(
+            "SELECT frontier_epoch FROM managed_graph_frontiers WHERE create_key=?",
+            (graph["create_key"],),
+        ).fetchone()
+        if frontier is None or int(frontier["frontier_epoch"]) != value["frontier_epoch"]:
+            raise ManagedTaskAuthorityError("managed finalize frontier epoch is stale")
+        current_barrier = conn.execute(
+            "SELECT status,current_run_id,assignee FROM tasks WHERE id=?",
+            (value["success_barrier_id"],),
+        ).fetchone()
+        if (
+            current_barrier is None or current_barrier["status"] != "ready"
+            or current_barrier["current_run_id"] is not None
+            or current_barrier["assignee"] is not None
+            or not _parents_satisfied(conn, value["success_barrier_id"])
+        ):
+            raise ManagedTaskAuthorityError("managed success barrier is not finalizable")
+        now = int(time.time())
+        updated = conn.execute(
+            "UPDATE tasks SET status='done',completed_at=? WHERE id=? "
+            "AND status='ready' AND current_run_id IS NULL AND assignee IS NULL",
+            (now, value["success_barrier_id"]),
+        )
+        if updated.rowcount != 1:
+            raise ManagedTaskAuthorityError("managed success barrier CAS failed")
+        barrier_run_id = _synthesize_ended_run(
+            conn,
+            value["success_barrier_id"],
+            outcome="completed",
+            summary="Core finalized managed success barrier.",
+            metadata={
+                "managed_finalize_request_id": value["request_id"],
+                "decision_id": value["decision_id"],
+                "token_state": "issued_and_consumed",
+            },
+        )
+        _append_event(
+            conn, value["success_barrier_id"], "managed_barrier_finalized",
+            {
+                "request_id": value["request_id"],
+                "decision_id": value["decision_id"],
+                "token_state": "issued_and_consumed",
+            },
+            run_id=barrier_run_id,
+        )
+        child_rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id=? ORDER BY child_id",
+            (value["success_barrier_id"],),
+        ).fetchall()
+        for child in child_rows:
+            child_id = str(child["child_id"])
+            if _parents_satisfied(conn, child_id):
+                conn.execute(
+                    "UPDATE tasks SET status='ready' WHERE id=? AND status='todo'",
+                    (child_id,),
+                )
+        next_epoch = value["frontier_epoch"] + 1
+        epoch_cas = conn.execute(
+            "UPDATE managed_graph_frontiers SET frontier_epoch=? "
+            "WHERE create_key=? AND frontier_epoch=?",
+            (next_epoch, graph["create_key"], value["frontier_epoch"]),
+        )
+        if epoch_cas.rowcount != 1:
+            raise ManagedTaskAuthorityError("managed frontier epoch CAS failed")
+        graph = _managed_graph_row_for_identity(
+            conn,
+            run_id=value["run_id"], board=value["board"],
+            graph_sha256=value["graph_sha256"],
+            graph_generation=value["graph_generation"],
+        )
+        frontier_result = _managed_frontier_result(conn, graph)
+        events = _managed_finalize_events(
+            run_id=value["run_id"],
+            node_id=value["node_id"],
+            decision_id=value["decision_id"],
+            success_barrier_id=value["success_barrier_id"],
+            graph_sha256=value["graph_sha256"],
+            graph_generation=value["graph_generation"],
+            frontier_epoch=next_epoch,
+            frontier_result=frontier_result,
+        )
+        result_body = {
+            "schema": "hm-loop-managed-finalize-result/v1",
+            "request_id": value["request_id"],
+            "request_sha256": value["request_sha256"],
+            "run_id": value["run_id"], "node_id": value["node_id"],
+            "attempt_no": value["attempt_no"],
+            "decision_id": value["decision_id"],
+            "graph_sha256": value["graph_sha256"],
+            "graph_generation": value["graph_generation"],
+            "task_run_generation": value["task_run_generation"],
+            "claim_frontier_epoch": value["claim_frontier_epoch"],
+            "frontier_epoch": next_epoch,
+            "token_state": "issued_and_consumed",
+            "frontier": frontier_result,
+            "events": events,
+            "replayed": False,
+        }
+        result_sha = _sha256_text(_canonical_json(result_body))
+        result = {
+            **result_body,
+            "result_id": f"finalize-result-{result_sha[:32]}",
+            "result_sha256": result_sha,
+        }
+        conn.execute(
+            "INSERT INTO managed_finalize_tokens (request_id,request_sha256,"
+            "create_key,logical_node_id,task_run_generation,claim_frontier_epoch,"
+            "decision_id,decision_sha256,token_state,result_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?, 'issued_and_consumed',?,?)",
+            (
+                value["request_id"], value["request_sha256"], graph["create_key"],
+                value["node_id"], value["task_run_generation"],
+                value["claim_frontier_epoch"], value["decision_id"],
+                value["decision_sha256"], _canonical_json(result), now,
+            ),
+        )
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -6198,6 +10177,7 @@ def edit_completed_task_result(
     metadata: Optional[dict] = None,
 ) -> bool:
     """Backfill the user-visible result for an already completed task."""
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
@@ -6261,6 +10241,9 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    _managed_authority: object = None,
+    _managed_claim_lock: Optional[str] = None,
+    _managed_claim_generation: Optional[int] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -6289,12 +10272,34 @@ def block_task(
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
     """
+    _assert_generic_managed_mutation_allowed(
+        conn, (task_id,), _managed_authority
+    )
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
     recurrences = 0
     with write_txn(conn):
+        managed_row = _managed_task_authority_row(conn, task_id)
+        if managed_row is not None:
+            current = conn.execute(
+                "SELECT claim_lock,current_run_id FROM tasks "
+                "WHERE id=? AND status='running'",
+                (task_id,),
+            ).fetchone()
+            if (
+                _managed_authority is not _MANAGED_MUTATION_AUTHORITY
+                or current is None
+                or current["claim_lock"] != _managed_claim_lock
+                or int(managed_row["claim_generation"])
+                != _managed_claim_generation
+                or expected_run_id is None
+                or int(current["current_run_id"]) != int(expected_run_id)
+            ):
+                raise ManagedTaskAuthorityError(
+                    "managed block authority does not match the live task run"
+                )
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
             (task_id,),
@@ -6482,6 +10487,72 @@ def block_task(
     return True
 
 
+def block_managed_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    claim_lock: str,
+    claim_generation: int,
+    reason: str,
+    kind: Optional[str] = None,
+    retry: bool = False,
+) -> bool:
+    """Block or requeue the exact live managed attempt without generic bypass."""
+    authority = managed_task_claim_authority(conn, task_id)
+    if authority is None:
+        raise ManagedTaskAuthorityError("task is not Core-managed")
+    if (
+        authority["claim_lock"] != claim_lock
+        or int(authority["claim_generation"]) != int(claim_generation)
+        or authority["current_run_id"] is None
+    ):
+        raise ManagedTaskAuthorityError("managed block authority is stale")
+    run_id = int(authority["current_run_id"])
+    if not block_task(
+        conn,
+        task_id,
+        reason=reason,
+        kind=kind,
+        expected_run_id=run_id,
+        _managed_authority=_MANAGED_MUTATION_AUTHORITY,
+        _managed_claim_lock=claim_lock,
+        _managed_claim_generation=int(claim_generation),
+    ):
+        return False
+    if retry:
+        with write_txn(conn):
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None or row["status"] not in {
+                "blocked", "todo", "triage",
+            }:
+                raise ManagedTaskAuthorityError(
+                    "managed retry source state changed"
+                )
+            retry_status = "ready" if _parents_satisfied(conn, task_id) else "todo"
+            updated = conn.execute(
+                "UPDATE tasks SET status=?,block_kind=NULL WHERE id=? AND status=?",
+                (retry_status, task_id, row["status"]),
+            )
+            if updated.rowcount != 1:
+                raise ManagedTaskAuthorityError("managed retry transition lost its fence")
+            _append_event(
+                conn,
+                task_id,
+                "managed_retry_scheduled",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "closed_run_id": run_id,
+                    "claim_generation": int(claim_generation),
+                    "status": retry_status,
+                },
+                run_id=run_id,
+            )
+    return True
+
+
 
 def redact_review_value(value: Any) -> Any:
     """Redact secrets at the domain boundary for durable review handoffs."""
@@ -6528,6 +10599,7 @@ def request_review(
     ``(ok, reason)`` mirroring :func:`request_changes` — ``reason`` is a
     diagnostic string on failure, ``None`` on success.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
 
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
@@ -6675,6 +10747,7 @@ def request_changes(
     ``changes_requested`` event.  The second tuple item is the implementer on
     success or a diagnostic reason on failure.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
@@ -6798,6 +10871,7 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
@@ -6908,6 +10982,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     now = int(time.time())
     with write_txn(conn):
         current = conn.execute(
@@ -6959,7 +11034,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def reopen_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    _managed_authority: object = None,
+) -> bool:
     """Transition ``review`` -> ready (or todo) so the implementer re-runs.
 
     The "changes requested" counterpart of :func:`request_review`: sends the
@@ -6973,6 +11053,9 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     genuine block *before* review is left intact — only :func:`complete_task`
     clears it.) Returns False when the task is missing or not in ``review``.
     """
+    _assert_generic_managed_mutation_allowed(
+        conn, (task_id,), _managed_authority
+    )
     now = int(time.time())
     with write_txn(conn):
         _reclaim_dangling_run(
@@ -7222,6 +11305,7 @@ def specify_triage_task(
     ``title`` / ``body`` / ``assignee`` actually changed — avoids noisy
     comment spam for status-only promotions.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
@@ -7323,6 +11407,7 @@ def decompose_triage_task(
     the inserts so a malformed entry aborts the whole decomposition
     cleanly (no orphan children).
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     if not children:
         return None
     if root_assignee is not None:
@@ -7521,7 +11606,15 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    _managed_authority: object = None,
+) -> bool:
+    _assert_generic_managed_mutation_allowed(
+        conn, (task_id,), _managed_authority
+    )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7557,6 +11650,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     tasks must be explicitly archived first so accidental data loss requires a
     second deliberate action.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     with write_txn(conn):
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
@@ -7586,6 +11680,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     with write_txn(conn):
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
@@ -7751,6 +11846,211 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
+def _git_commit_identity(repo_root: Path, revision: str) -> str:
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "rev-parse",
+            "--verify",
+            f"{revision}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ManagedTaskAuthorityError("managed frozen base commit is unavailable")
+    return completed.stdout.strip()
+
+
+def _git_is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        ],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def _managed_workspace_authority(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT g.request_json FROM managed_task_authority AS a "
+        "JOIN managed_task_graphs AS g ON g.create_key=a.create_key "
+        "WHERE a.task_id=?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        request = json.loads(str(row["request_json"]))
+    except (TypeError, ValueError) as exc:
+        raise ManagedTaskAuthorityError(
+            "managed graph request authority is unreadable"
+        ) from exc
+    nodes = request.get("nodes") if isinstance(request, dict) else None
+    if not isinstance(nodes, list):
+        raise ManagedTaskAuthorityError("managed graph request authority is invalid")
+    matches = [node for node in nodes if node.get("task_id") == task_id]
+    if len(matches) != 1 or not isinstance(matches[0], dict):
+        raise ManagedTaskAuthorityError("managed workspace authority is missing")
+    return matches[0]
+
+
+def _bind_managed_run_workspace_provenance(
+    conn: sqlite3.Connection,
+    task: Task,
+    authority: Mapping[str, Any],
+    root: Path,
+) -> None:
+    run = conn.execute(
+        "SELECT current_run_id,status FROM tasks WHERE id=?", (task.id,)
+    ).fetchone()
+    if run is None or run["status"] != "running" or run["current_run_id"] is None:
+        return
+    commit = _git_commit_identity(
+        root, str(authority.get("base_commit") or "HEAD")
+    )
+    resolved_tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", f"{commit}^{{tree}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if resolved_tree.returncode != 0:
+        raise ManagedTaskAuthorityError("managed frozen base tree is unavailable")
+    tree = resolved_tree.stdout.strip()
+    authority_sha = _sha256_text(_canonical_json(dict(authority)))
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT workspace_start_commit,workspace_start_tree,"
+            "workspace_authority_sha256 FROM task_runs WHERE id=? AND task_id=?",
+            (int(run["current_run_id"]), task.id),
+        ).fetchone()
+        if existing is None:
+            raise ManagedTaskAuthorityError("managed task-run provenance is missing")
+        expected = (commit, tree, authority_sha)
+        observed = tuple(existing)
+        if observed == expected:
+            return
+        if observed != (None, None, None):
+            raise ManagedTaskAuthorityError("managed task-run provenance differs")
+        updated = conn.execute(
+            "UPDATE task_runs SET workspace_start_commit=?,workspace_start_tree=?,"
+            "workspace_authority_sha256=? WHERE id=? AND task_id=? AND status='running' "
+            "AND workspace_start_commit IS NULL AND workspace_start_tree IS NULL "
+            "AND workspace_authority_sha256 IS NULL",
+            (*expected, int(run["current_run_id"]), task.id),
+        )
+        if updated.rowcount != 1:
+            raise ManagedTaskAuthorityError("managed task-run provenance CAS lost")
+
+
+def _resolve_managed_worktree_workspace(
+    conn: sqlite3.Connection,
+    task: Task,
+    authority: Mapping[str, Any],
+) -> tuple[Path, str]:
+    if not authority.get("mutating") or authority.get("workspace_kind") != "worktree":
+        raise ManagedTaskAuthorityError("managed worktree authority is invalid")
+    root = Path(str(authority.get("owning_root_id") or "")).resolve(strict=True)
+    target = Path(str(authority.get("workspace_path") or "")).resolve(strict=False)
+    if (
+        hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+        != authority.get("owning_root_sha256")
+        or target.parent != root / ".worktrees"
+        or target.name != task.id
+        or _git_toplevel(root) != root
+    ):
+        raise ManagedTaskAuthorityError("managed worktree authority does not bind the repository")
+    base_commit = _git_commit_identity(root, str(authority.get("base_commit") or ""))
+    branch_name = f"wt/{task.id}"
+    if task.branch_name != branch_name:
+        raise ManagedTaskAuthorityError("managed sealed branch authority changed")
+    repo_common = _git_common_dir(root)
+    if repo_common is None:
+        raise ManagedTaskAuthorityError("managed owning root is not a Git repository")
+
+    if target.exists():
+        if _git_common_dir(target) != repo_common:
+            raise ManagedTaskAuthorityError("managed foreign workspace occupies the target")
+        if _git_current_branch(target) != branch_name:
+            raise ManagedTaskAuthorityError("managed foreign workspace branch mismatch")
+        head = _git_commit_identity(target, "HEAD")
+        if not _git_is_ancestor(root, base_commit, head):
+            raise ManagedTaskAuthorityError("managed workspace escaped its frozen base")
+        _bind_managed_run_workspace_provenance(conn, task, authority, root)
+        return target, branch_name
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_branch_exists(root, branch_name):
+        branch_head = _git_commit_identity(root, branch_name)
+        if not _git_is_ancestor(root, base_commit, branch_head):
+            raise ManagedTaskAuthorityError("managed branch escaped its frozen base")
+        command = [
+            "git",
+            "-C",
+            str(root),
+            "worktree",
+            "add",
+            str(target),
+            branch_name,
+        ]
+    else:
+        command = [
+            "git",
+            "-C",
+            str(root),
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            str(target),
+            base_commit,
+        ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ManagedTaskAuthorityError(
+            f"managed Git worktree creation failed: {detail}"
+        )
+    if (
+        _git_common_dir(target) != repo_common
+        or _git_current_branch(target) != branch_name
+        or _git_commit_identity(target, "HEAD") != base_commit
+    ):
+        raise ManagedTaskAuthorityError("managed worktree creation readback mismatch")
+    _bind_managed_run_workspace_provenance(conn, task, authority, root)
+    return target, branch_name
+
+
 def _resolve_worktree_workspace(
     task: Task, *, board: Optional[str] = None
 ) -> tuple[Path, str]:
@@ -7840,7 +12140,12 @@ def _resolve_worktree_workspace(
     return requested, branch_name
 
 
-def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+def resolve_workspace(
+    task: Task,
+    *,
+    board: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
     - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
@@ -7895,8 +12200,39 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
         p.mkdir(parents=True, exist_ok=True)
+        if conn is not None:
+            authority = _managed_workspace_authority(conn, task.id)
+            if authority is not None:
+                canonical = p.resolve(strict=True)
+                root = Path(
+                    str(authority.get("owning_root_id") or "")
+                ).resolve(strict=True)
+                if (
+                    authority.get("mutating")
+                    or canonical != Path(str(authority.get("workspace_path"))).resolve(
+                        strict=True
+                    )
+                    or hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+                    != authority.get("owning_root_sha256")
+                    or _git_toplevel(canonical) != root
+                ):
+                    raise ManagedTaskAuthorityError(
+                        "managed directory workspace authority differs"
+                    )
+                _bind_managed_run_workspace_provenance(
+                    conn, task, authority, canonical
+                )
         return p
     if kind == "worktree":
+        if conn is not None:
+            authority = _managed_workspace_authority(conn, task.id)
+            if authority is not None:
+                path, _branch_name = _resolve_managed_worktree_workspace(
+                    conn,
+                    task,
+                    authority,
+                )
+                return path
         p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
@@ -7905,6 +12241,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 def set_workspace_path(
     conn: sqlite3.Connection, task_id: str, path: Path | str
 ) -> None:
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
@@ -7915,6 +12252,7 @@ def set_workspace_path(
 def set_branch_name(
     conn: sqlite3.Connection, task_id: str, branch_name: str
 ) -> None:
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET branch_name = ? WHERE id = ?",
@@ -7936,6 +12274,7 @@ def schedule_task(
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
+    _assert_generic_managed_mutation_allowed(conn, (task_id,))
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """
@@ -10238,15 +14577,23 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claim_fn = (
+            _claim_managed_task if _is_managed_task(conn, row["id"]) else claim_task
+        )
+        claimed = claim_fn(
+            conn,
+            row["id"],
+            ttl_seconds=ttl_seconds,
+            board=board,
+            max_in_progress_per_profile=_per_profile_cap,
+        )
         if claimed is None:
             continue
         try:
             resolved_branch_name = None
+            workspace = resolve_workspace(claimed, board=board, conn=conn)
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
-            else:
-                workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _git_current_branch(workspace)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -10256,9 +14603,10 @@ def _dispatch_once_locked(
                 result.auto_blocked.append(claimed.id)
             continue
         # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        if not _is_managed_task(conn, claimed.id):
+            set_workspace_path(conn, claimed.id, str(workspace))
+            if claimed.workspace_kind == "worktree":
+                set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -10370,10 +14718,9 @@ def _dispatch_once_locked(
             continue
         try:
             resolved_branch_name = None
+            workspace = resolve_workspace(claimed, board=board, conn=conn)
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
-            else:
-                workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _git_current_branch(workspace)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -10383,9 +14730,10 @@ def _dispatch_once_locked(
                 result.auto_blocked.append(claimed.id)
             continue
         # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        if not _is_managed_task(conn, claimed.id):
+            set_workspace_path(conn, claimed.id, str(workspace))
+            if claimed.workspace_kind == "worktree":
+                set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
@@ -10802,6 +15150,20 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    managed_claim_generation = getattr(
+        task, "_managed_claim_generation", None
+    )
+    managed_task_run_generation = getattr(
+        task, "_managed_task_run_generation", None
+    )
+    if managed_claim_generation is not None:
+        env["HERMES_KANBAN_CLAIM_GENERATION"] = str(
+            int(managed_claim_generation)
+        )
+    if managed_task_run_generation is not None:
+        env["HERMES_KANBAN_TASK_RUN_GENERATION"] = str(
+            int(managed_task_run_generation)
+        )
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
@@ -11355,7 +15717,12 @@ def task_age(task: Task) -> dict:
 #   "notify"       -> passive ``adapter.send`` only (default)
 #   "notify+wake"  -> passive send AND wake the destination gateway agent
 #   "wake"         -> wake the agent only; no passive message is sent
-_NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+_NOTIFY_DELIVERY_MODES = (
+    "notify",
+    "notify+wake",
+    "notify+required-wake",
+    "wake",
+)
 
 
 def _encode_notify_delivery_metadata(
@@ -11448,7 +15815,9 @@ def add_notify_sub(
     insert_chat_type = chat_type or "dm"
     now = int(time.time())
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
-    with write_txn(conn):
+    # Graph materializers register required-wake subscriptions inside their
+    # existing all-or-nothing transaction; use a savepoint when nested.
+    with write_txn(conn, allow_nested=True):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs

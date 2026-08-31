@@ -871,6 +871,26 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["delivery_mode"] == "notify+wake"
 
 
+def test_required_wake_auto_subscription_uses_strict_delivery_mode(
+    monkeypatch, worker_env
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-required")
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="required wake")
+        assert kt._maybe_auto_subscribe(conn, task_id, required_wake=True)
+    finally:
+        conn.close()
+
+    subs = _sub_index(_list_subs_for_task(task_id))
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+required-wake"
+
+
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     """TUI / desktop sessions don't have a platform/chat_id (single
     local channel), but the parent process exports HERMES_SESSION_KEY.
