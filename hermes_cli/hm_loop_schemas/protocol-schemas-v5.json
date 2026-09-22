@@ -92,7 +92,22 @@
       "$ref": "#/$defs/OutboxClaimRequestV1"
     },
     {
+      "$ref": "#/$defs/OutboxClaimRequestV2"
+    },
+    {
       "$ref": "#/$defs/OutboxBatchV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxDeliveryEnvelopeReadRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxDeliveryEnvelopeV1"
+    },
+    {
+      "$ref": "#/$defs/SubscriptionEventMaterializationRequestV1"
+    },
+    {
+      "$ref": "#/$defs/SubscriptionEventMaterializationResultV1"
     },
     {
       "$ref": "#/$defs/OutboxLeaseRenewRequestV1"
@@ -881,7 +896,6 @@
             "pattern": "^[0-9a-f]{64}$",
             "minLength": 1
           },
-          "minItems": 1,
           "uniqueItems": true
         },
         "created_at": {
@@ -1681,7 +1695,6 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           },
-          "minItems": 1,
           "uniqueItems": true
         },
         "controller_fence": {
@@ -2340,6 +2353,361 @@
         }
       }
     },
+    "OutboxClaimRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "lease_fence", "now", "ttl_seconds", "limit", "eligible_target_ids"],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eligible_target_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 500,
+          "uniqueItems": true
+        }
+      }
+    },
+    "OutboxDeliveryEnvelopeReadRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outbox_id", "target_id"],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "CatalogDeliveryTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_id",
+        "task_id",
+        "controller_authority",
+        "platform",
+        "chat_id",
+        "thread_id",
+        "delivery_mode",
+        "delivery_metadata",
+        "created_at"
+      ],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chat_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delivery_metadata": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "TaskEventEnvelopeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "task_id",
+        "run_id",
+        "kind",
+        "payload",
+        "created_at"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "run_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {},
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxDeliveryEnvelopeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "outbox_id", "payload_sha256", "delivery_target", "event"],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "delivery_target": {
+          "$ref": "#/$defs/CatalogDeliveryTargetV1"
+        },
+        "event": {
+          "$ref": "#/$defs/TaskEventEnvelopeV1"
+        }
+      }
+    },
+    "SubscriptionEventMaterializationTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controller_authority", "delivery_mode", "delivery_metadata"],
+      "properties": {
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delivery_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delivery_metadata": {
+          "type": ["object", "null"]
+        }
+      }
+    },
+    "SubscriptionEventMaterializationRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "platform",
+        "chat_id",
+        "thread_id",
+        "kinds",
+        "targets",
+        "max_attempts",
+        "now"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chat_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubscriptionEventMaterializationTargetV1"
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "SubscriptionEventMaterializedTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_id", "controller_authority", "status"],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["created", "replayed"]
+        }
+      }
+    },
+    "SubscriptionEventMaterializedOutboxV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "event_id",
+        "target_id",
+        "controller_authority",
+        "payload_sha256",
+        "status"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["created", "replayed"]
+        }
+      }
+    },
+    "SubscriptionEventMaterializationResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "old_cursor",
+        "new_cursor",
+        "event_ids",
+        "target_results",
+        "outbox_results"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "old_cursor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_cursor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "uniqueItems": true
+        },
+        "target_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubscriptionEventMaterializedTargetV1"
+          }
+        },
+        "outbox_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubscriptionEventMaterializedOutboxV1"
+          }
+        }
+      }
+    },
     "OutboxBatchV1": {
       "type": "object",
       "additionalProperties": false,
@@ -2726,6 +3094,7 @@
         "outbox_id",
         "observed_lease_generation",
         "observed_lease_fence",
+        "owner_alive",
         "now",
         "reason_code",
         "reason_sha256"
@@ -2742,6 +3111,9 @@
         "observed_lease_fence": {
           "type": "string",
           "minLength": 1
+        },
+        "owner_alive": {
+          "type": "boolean"
         },
         "now": {
           "type": "integer",
@@ -3754,10 +4126,28 @@
       ],
       "apis": [
         {
+          "name": "materialize_subscription_events_to_outbox",
+          "signature": "materialize_subscription_events_to_outbox(conn, request: SubscriptionEventMaterializationRequestV1) -> SubscriptionEventMaterializationResultV1",
+          "request_ref": "#/$defs/SubscriptionEventMaterializationRequestV1",
+          "result_ref": "#/$defs/SubscriptionEventMaterializationResultV1"
+        },
+        {
           "name": "claim_outbox_batch",
           "signature": "claim_outbox_batch(conn, request: OutboxClaimRequestV1) -> OutboxBatchV1",
           "request_ref": "#/$defs/OutboxClaimRequestV1",
           "result_ref": "#/$defs/OutboxBatchV1"
+        },
+        {
+          "name": "claim_outbox_batch_for_targets",
+          "signature": "claim_outbox_batch_for_targets(conn, request: OutboxClaimRequestV2) -> OutboxBatchV1",
+          "request_ref": "#/$defs/OutboxClaimRequestV2",
+          "result_ref": "#/$defs/OutboxBatchV1"
+        },
+        {
+          "name": "read_outbox_delivery_envelope",
+          "signature": "read_outbox_delivery_envelope(conn, request: OutboxDeliveryEnvelopeReadRequestV1) -> OutboxDeliveryEnvelopeV1",
+          "request_ref": "#/$defs/OutboxDeliveryEnvelopeReadRequestV1",
+          "result_ref": "#/$defs/OutboxDeliveryEnvelopeV1"
         },
         {
           "name": "renew_outbox_lease",
@@ -3791,11 +4181,17 @@
         }
       ],
       "rules": [
+        "subscription event materialization reads the exact legacy cursor, registers deterministic immutable targets, inserts idempotent outbox rows with canonical event-payload SHA-256, and advances the cursor in one write transaction",
+        "a failed target or outbox identity/hash check rolls back all target, outbox and cursor writes; replay returns the original identities without duplicates",
         "all transitions are CAS on outbox_id, state, lease_fence and lease_generation",
+        "OutboxClaimRequestV2 requires a non-empty unique eligible_target_ids selector; target-affine claims and returned batches contain only those targets and never fall back to the global queue",
+        "OutboxClaimRequestV1 and claim_outbox_batch retain their legacy global behavior for existing callers; new notifier code uses claim_outbox_batch_for_targets",
+        "outbox delivery envelope reads bind outbox_id to the expected target_id, controller authority, delivery target task and immutable task-event identity",
         "attempt_no increments exactly once per failed lease; attempt_no >= max_attempts requires dead_letter",
         "passive/wake/ack receipts are independent immutable hashes",
         "dead_letter request/result both require and return reason_code, dead_letter_reason and reason_sha256",
         "reclaim-to-retry request/result both require and return reason_code and reason_sha256; result also returns hold_receipt_sha256",
+        "reclaim requires a false owner_alive observation and an expired observed lease; passive/wake receipt hashes survive the retry transition",
         "reason_sha256 is derived only from the exact canonical reason_hash_contract preimage before any CAS mutation",
         "EventOutboxV4, API result and canonical hold receipt bind the same immutable reason_sha256",
         "exact replay with the same reason_sha256 returns the same result and hold receipt; a different or non-derived reason_sha256 returns OUTBOX_REASON_HASH_CONFLICT without mutation"

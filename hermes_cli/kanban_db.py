@@ -1562,6 +1562,8 @@ CREATE TABLE IF NOT EXISTS kanban_graph_generations (
     request_sha256 TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     activated_at INTEGER,
+    finalized_at INTEGER,
+    sealed_token_id TEXT,
     PRIMARY KEY (root_task_id, topology_generation)
 );
 
@@ -1771,6 +1773,18 @@ CREATE TABLE IF NOT EXISTS graph_seals (
     report_hashes TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     token_sha256 TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_acknowledgements (
+    ack_id TEXT PRIMARY KEY,
+    consumption_id TEXT NOT NULL UNIQUE,
+    controller_authority TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    decision_id TEXT NOT NULL,
+    sealed_token_id TEXT NOT NULL,
+    acknowledged_at INTEGER NOT NULL,
+    ack_sha256 TEXT NOT NULL,
+    UNIQUE (decision_id, event_id)
 );
 """
 
@@ -16705,12 +16719,16 @@ def finalize_task_graph(conn: sqlite3.Connection, request: Mapping[str, Any]) ->
         token_id = "seal_" + secrets.token_hex(12)
         event_hwm = max(request["terminal_event_ids"])
         board_hwm = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_events").fetchone()[0])
-        token_payload = {"sealed_token_id": token_id, "decision_id": request["decision_id"], "decision_sha256": request["decision_sha256"], "root_task_id": request["root_task_id"], "topology_generation": request["topology_generation"], "activation_epoch": request["activation_epoch"], "topology_digest": request["topology_digest"], "terminal_event_ids": request["terminal_event_ids"], "controller_fence": request["controller_fence"], "created_at": request["now"]}
+        token_payload = {"sealed_token_id": token_id, "schema_version": 1, "hm_loop_run_id": request["hm_loop_run_id"], "phase_id": request["phase_id"], "attempt_no": request["attempt_no"], "root_task_id": request["root_task_id"], "topology_generation": request["topology_generation"], "activation_epoch": request["activation_epoch"], "topology_digest": request["topology_digest"], "terminal_task_ids": request["terminal_task_ids"], "terminal_task_run_ids": request["terminal_task_run_ids"], "terminal_event_ids": request["terminal_event_ids"], "event_high_watermark": event_hwm, "board_high_watermark": board_hwm, "controller_lease_generation": int(decision["controller_lease_generation"]), "controller_fence": request["controller_fence"], "producer_hashes": request["producer_hashes"], "report_hashes": request["report_hashes"], "created_at": request["now"]}
         token_sha = _canonical_sha256(token_payload)
         conn.execute("INSERT INTO graph_seals (sealed_token_id, decision_id, decision_sha256, hm_loop_run_id, phase_id, attempt_no, root_task_id, topology_generation, activation_epoch, topology_digest, terminal_task_ids, terminal_task_run_ids, terminal_event_ids, event_high_watermark, board_high_watermark, controller_lease_generation, controller_fence, producer_hashes, report_hashes, created_at, token_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (token_id, request["decision_id"], request["decision_sha256"], request["hm_loop_run_id"], request["phase_id"], request["attempt_no"], request["root_task_id"], request["topology_generation"], request["activation_epoch"], request["topology_digest"], _json_list(request["terminal_task_ids"]), _json_list(request["terminal_task_run_ids"]), _json_list(request["terminal_event_ids"]), event_hwm, board_hwm, int(decision["controller_lease_generation"]), request["controller_fence"], _json_list(request["producer_hashes"]), _json_list(request["report_hashes"]), request["now"], token_sha))
         conn.execute("UPDATE phase_decisions SET state = 'sealed', sealed_token_id = ? WHERE decision_id = ? AND state = 'prepared'", (token_id, request["decision_id"]))
         conn.execute("UPDATE kanban_graph_generations SET state = 'finalized', finalized_at = ?, sealed_token_id = ? WHERE root_task_id = ? AND topology_generation = ? AND state = 'active'", (request["now"], token_id, request["root_task_id"], request["topology_generation"]))
     return {"sealed_token_id": token_id, "schema_version": 1, "hm_loop_run_id": request["hm_loop_run_id"], "phase_id": request["phase_id"], "attempt_no": request["attempt_no"], "root_task_id": request["root_task_id"], "topology_generation": request["topology_generation"], "activation_epoch": request["activation_epoch"], "topology_digest": request["topology_digest"], "terminal_task_ids": request["terminal_task_ids"], "terminal_task_run_ids": request["terminal_task_run_ids"], "terminal_event_ids": request["terminal_event_ids"], "event_high_watermark": event_hwm, "board_high_watermark": board_hwm, "controller_lease_generation": int(decision["controller_lease_generation"]), "controller_fence": request["controller_fence"], "producer_hashes": request["producer_hashes"], "report_hashes": request["report_hashes"], "created_at": request["now"], "token_sha256": token_sha}
+
+def _json_list(value: Iterable[Any]) -> str:
+    return json.dumps(list(value), separators=(",", ":"), ensure_ascii=False)
+
 
 def acknowledge_decision_events(conn: sqlite3.Connection, request: Mapping[str, Any]) -> dict[str, Any]:
     request = _validate_c1("AckRequestV1", request)
@@ -16722,9 +16740,23 @@ def acknowledge_decision_events(conn: sqlite3.Connection, request: Mapping[str, 
         if len(consumed) != len(request["event_ids"]):
             raise KanbanProtocolError("ACK_EVENT_COVERAGE_CONFLICT", "every ack needs a matching consumption")
         inserted = replayed = 0
+        acknowledged_event_ids: list[int] = []
         for consumption in consumed:
             existing = conn.execute("SELECT * FROM event_acknowledgements WHERE consumption_id = ?", (consumption["consumption_id"],)).fetchone()
             if existing is not None:
                 if existing["sealed_token_id"] != request["sealed_token_id"]:
                     raise KanbanProtocolError("ACK_IDENTITY_CONFLICT", "event was acknowledged with another seal")
                 replayed += 1
+                acknowledged_event_ids.append(int(consumption["event_id"]))
+            else:
+                ack_id = "ack_" + secrets.token_hex(12)
+                ack_sha = _canonical_sha256({"ack_id": ack_id, "consumption_id": consumption["consumption_id"], "sealed_token_id": request["sealed_token_id"], "acknowledged_at": request["now"]})
+                conn.execute(
+                    "INSERT INTO event_acknowledgements (ack_id, consumption_id, controller_authority, event_id, decision_id, sealed_token_id, acknowledged_at, ack_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (ack_id, consumption["consumption_id"], seal["controller_authority"] if "controller_authority" in seal.keys() else "", int(consumption["event_id"]), request["decision_id"], request["sealed_token_id"], request["now"], ack_sha),
+                )
+                inserted += 1
+                acknowledged_event_ids.append(int(consumption["event_id"]))
+    return {"sealed_token_id": request["sealed_token_id"], "decision_id": request["decision_id"], "acknowledged_event_ids": sorted(acknowledged_event_ids), "inserted_count": inserted, "replayed_count": replayed}
+
+

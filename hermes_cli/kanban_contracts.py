@@ -14,7 +14,7 @@ from typing import Any
 
 
 _SCHEMA_SHA256 = {
-    "protocol-schemas-v5.json": "fafae503e2f1a201c5afc3bdc04018911b930a0636fe7c4bb0a64f64a8b44b60",
+    "protocol-schemas-v5.json": "9697bff74e3197e4f3934a66bc5739cb1e09778ab05529df12fefd8fa0a8650c",
     "report-schemas-v4.json": "880b97de7cece836143cea834d77d67016b3cf7c9d72cbf7a1d7b6fad3d369d8",
 }
 
