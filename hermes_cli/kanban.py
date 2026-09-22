@@ -250,6 +250,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- observe ---
+    # This command is deliberately dispatched before the normal auto-init
+    # path.  It is a migration preflight and must not create a board, open a
+    # writable connection, recompute state, or configure WAL.
+    p_observe = sub.add_parser(
+        "observe",
+        help="Read a Kanban DB through the strict no-init/no-migrate observer",
+    )
+    p_observe.add_argument("--db", required=True, metavar="<absolute-db-path>")
+    p_observe.add_argument("--task", required=True, metavar="<task-id>")
+    p_observe.add_argument("--format", default=None, choices=["json"])
+    p_observe.add_argument("--no-init", action="store_true")
+    p_observe.add_argument("--no-migrate", action="store_true")
+    p_observe.add_argument("--no-recompute", action="store_true")
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -1095,6 +1110,12 @@ def kanban_command(args: argparse.Namespace) -> int:
     # alpha.
     if action == "boards":
         return _dispatch_boards(args)
+
+    # The observer is an explicit separate trust boundary.  Do not move this
+    # branch under board scoping or auto-init: either would introduce normal
+    # Kanban connect behavior into a read-only preflight.
+    if action == "observe":
+        return _cmd_observe(args)
 
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
@@ -3544,3 +3565,34 @@ def run_slash(rest: str) -> str:
     if err and out:
         return f"{out}\n{err}"
     return err if err else (out or "(no output)")
+
+
+def _cmd_observe(args: argparse.Namespace) -> int:
+    """Run the no-init/no-migrate SQLite observer and emit its JSON report."""
+    if args.format != "json" or not all(
+        getattr(args, name, False) for name in ("no_init", "no_migrate", "no_recompute")
+    ):
+        print(
+            "kanban observe requires --format json --no-init --no-migrate --no-recompute",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        from hermes_cli.kanban_observe import observe_board_read_only
+
+        from pathlib import Path
+        db_path = Path(args.db)
+        request = {
+            "task_id": args.task,
+            "format": args.format,
+            "no_init": args.no_init,
+            "no_migrate": args.no_migrate,
+            "no_recompute": args.no_recompute,
+            "expected_schema_version": 999,
+        }
+        report = observe_board_read_only(db_path, request)
+    except (OSError, ValueError) as exc:
+        print(f"observe failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, sort_keys=True))
+    return 0
