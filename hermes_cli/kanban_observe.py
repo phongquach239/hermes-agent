@@ -72,7 +72,7 @@ def _file_identity(path: Path) -> dict[str, Any]:
 
 
 def _snapshot(db_path: Path) -> list[dict[str, Any]]:
-    return [_file_identity(candidate) for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))]
+    return [_file_identity(candidate) for candidate in (db_path, Path(f"{db_path}-wal"))]
 
 
 def _read_count(conn: sqlite3.Connection, table: str) -> int:
