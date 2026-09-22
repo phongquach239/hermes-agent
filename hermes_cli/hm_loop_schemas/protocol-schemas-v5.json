@@ -1,0 +1,4109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/hm-loop/protocol-schemas-v5.json",
+  "title": "hm-loop exact protocol schemas v5",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/TaskAuthorityV1"
+    },
+    {
+      "$ref": "#/$defs/GraphGenerationV1"
+    },
+    {
+      "$ref": "#/$defs/GraphGenerationMemberV1"
+    },
+    {
+      "$ref": "#/$defs/GraphGenerationLinkV1"
+    },
+    {
+      "$ref": "#/$defs/DeliveryTargetV1"
+    },
+    {
+      "$ref": "#/$defs/EventOutboxV4"
+    },
+    {
+      "$ref": "#/$defs/EventConsumptionV1"
+    },
+    {
+      "$ref": "#/$defs/EventAcknowledgementV1"
+    },
+    {
+      "$ref": "#/$defs/PhaseDecisionV1"
+    },
+    {
+      "$ref": "#/$defs/SealedGraphTokenV1"
+    },
+    {
+      "$ref": "#/$defs/MigrationJournalV1"
+    },
+    {
+      "$ref": "#/$defs/SchedulerLeaseV1"
+    },
+    {
+      "$ref": "#/$defs/GraphCreateRequestV1"
+    },
+    {
+      "$ref": "#/$defs/GraphCreatedV1"
+    },
+    {
+      "$ref": "#/$defs/ActivatedGraphV1"
+    },
+    {
+      "$ref": "#/$defs/ConsumeEventBatchRequestV1"
+    },
+    {
+      "$ref": "#/$defs/KanbanDecisionRefV1"
+    },
+    {
+      "$ref": "#/$defs/SealGraphRequestV1"
+    },
+    {
+      "$ref": "#/$defs/AckRequestV1"
+    },
+    {
+      "$ref": "#/$defs/AckResultV1"
+    },
+    {
+      "$ref": "#/$defs/CapacityRequestV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityReservationV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityBindRequestV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityBindResultV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityRenewRequestV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityRenewResultV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityReleaseRequestV2"
+    },
+    {
+      "$ref": "#/$defs/CapacityReleaseResultV2"
+    },
+    {
+      "$ref": "#/$defs/OutboxClaimRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxBatchV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxLeaseRenewRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxLeaseRenewResultV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxTransitionRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxTransitionResultV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxRetryRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxRetryResultV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxDeadLetterRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxDeadLetterResultV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxReclaimRequestV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxReclaimResultV1"
+    },
+    {
+      "$ref": "#/$defs/TaskScopeRequestV2"
+    },
+    {
+      "$ref": "#/$defs/TaskScopeDecisionV1"
+    },
+    {
+      "$ref": "#/$defs/ObserveRequestV1"
+    },
+    {
+      "$ref": "#/$defs/ObserveReportV1"
+    },
+    {
+      "$ref": "#/$defs/TaskScopeAuthorityV1"
+    },
+    {
+      "$ref": "#/$defs/CancelCapacityReservationRequestV1"
+    },
+    {
+      "$ref": "#/$defs/CancelCapacityReservationResultV1"
+    },
+    {
+      "$ref": "#/$defs/CapacityReservationReconcileRequestV1"
+    },
+    {
+      "$ref": "#/$defs/CapacityReservationReconcileResultV1"
+    },
+    {
+      "$ref": "#/$defs/BoundCapacityLeaseReconcileRequestV1"
+    },
+    {
+      "$ref": "#/$defs/BoundCapacityLeaseReconcileResultV1"
+    }
+  ],
+  "$defs": {
+    "TaskAuthorityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "authority_version",
+        "scope",
+        "lineage_root_session_id",
+        "turn_id",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "root_task_id",
+        "topology_generation",
+        "project_root",
+        "project_generation",
+        "workspace_kind",
+        "workspace_path",
+        "network_policy",
+        "correlation_key",
+        "request_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "authority_version": {
+          "const": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "kanban",
+            "hm-loop"
+          ],
+          "minLength": 1
+        },
+        "lineage_root_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "project_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workspace_kind": {
+          "type": "string",
+          "enum": [
+            "scratch",
+            "dir",
+            "worktree"
+          ],
+          "minLength": 1
+        },
+        "workspace_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "network_policy": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "minLength": 1
+        },
+        "correlation_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "GraphGenerationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_task_id",
+        "topology_generation",
+        "state",
+        "activation_epoch",
+        "previous_root_task_id",
+        "previous_topology_generation",
+        "topology_preimage_sha256",
+        "topology_digest",
+        "create_key",
+        "request_sha256",
+        "created_at",
+        "activated_at",
+        "finalized_at",
+        "retired_at",
+        "sealed_token_id"
+      ],
+      "properties": {
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "staged",
+            "active",
+            "finalized",
+            "retired"
+          ],
+          "minLength": 1
+        },
+        "activation_epoch": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "previous_root_task_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^t_[0-9a-f]{8}$",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_topology_generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "topology_preimage_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "create_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activated_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "finalized_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "retired_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "sealed_token_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GraphGenerationMemberV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_task_id",
+        "topology_generation",
+        "task_id",
+        "ordinal",
+        "role",
+        "authority_sha256"
+      ],
+      "properties": {
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        }
+      }
+    },
+    "GraphGenerationLinkV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_task_id",
+        "topology_generation",
+        "parent_task_id",
+        "child_task_id",
+        "ordinal"
+      ],
+      "properties": {
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parent_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "child_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "DeliveryTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_id",
+        "event_id",
+        "kind",
+        "destination",
+        "controller_authority",
+        "created_at"
+      ],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "passive",
+            "wake"
+          ],
+          "minLength": 1
+        },
+        "destination": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "EventConsumptionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumption_id",
+        "controller_authority",
+        "event_id",
+        "decision_id",
+        "target_id",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "controller_lease_generation",
+        "consumed_at",
+        "payload_sha256"
+      ],
+      "properties": {
+        "consumption_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consumed_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        }
+      }
+    },
+    "EventAcknowledgementV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ack_id",
+        "consumption_id",
+        "controller_authority",
+        "event_id",
+        "decision_id",
+        "sealed_token_id",
+        "acknowledged_at",
+        "ack_sha256"
+      ],
+      "properties": {
+        "ack_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumption_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sealed_token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acknowledged_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ack_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        }
+      }
+    },
+    "PhaseDecisionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "controller_authority",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "root_task_id",
+        "topology_generation",
+        "activation_epoch",
+        "ordered_event_ids",
+        "event_set_sha256",
+        "policy_sha256",
+        "evidence_hash",
+        "canonical_preimage",
+        "canonical_preimage_sha256",
+        "controller_lease_generation",
+        "controller_fence",
+        "state",
+        "decision_code",
+        "decision_sha256",
+        "sealed_token_id",
+        "created_at"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activation_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ordered_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "event_set_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "controller_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "prepared",
+            "sealed",
+            "committed",
+            "superseded"
+          ],
+          "minLength": 1
+        },
+        "decision_code": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "hold"
+          ],
+          "minLength": 1
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "sealed_token_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policy_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "canonical_preimage": {
+          "type": "string",
+          "minLength": 2
+        },
+        "canonical_preimage_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "SealedGraphTokenV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sealed_token_id",
+        "schema_version",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "root_task_id",
+        "topology_generation",
+        "activation_epoch",
+        "topology_digest",
+        "terminal_task_ids",
+        "terminal_task_run_ids",
+        "terminal_event_ids",
+        "event_high_watermark",
+        "board_high_watermark",
+        "controller_lease_generation",
+        "controller_fence",
+        "producer_hashes",
+        "report_hashes",
+        "created_at",
+        "token_sha256"
+      ],
+      "properties": {
+        "sealed_token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activation_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "terminal_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "terminal_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "terminal_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "event_high_watermark": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "board_high_watermark": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "report_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "token_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        }
+      }
+    },
+    "MigrationJournalV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "migration_id",
+        "database_identity",
+        "from_version",
+        "to_version",
+        "schema_signature_sha256",
+        "state",
+        "ordered_step_ids",
+        "step_checksums",
+        "last_committed_step",
+        "backup_path",
+        "backup_sha256",
+        "owner_id",
+        "owner_generation",
+        "fence",
+        "lease_expires_at",
+        "created_at",
+        "updated_at",
+        "error_code"
+      ],
+      "properties": {
+        "migration_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "database_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema_signature_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "prepared",
+            "applying",
+            "committed",
+            "recovery_required"
+          ],
+          "minLength": 1
+        },
+        "ordered_step_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "step_checksums": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "last_committed_step": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "backup_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backup_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "owner_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_expires_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updated_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SchedulerLeaseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "board_db_identity",
+        "owner_id",
+        "scheduler_epoch",
+        "fence_token",
+        "expires_at",
+        "updated_at"
+      ],
+      "properties": {
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scheduler_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fence_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updated_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "GraphCreateRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "create_key",
+        "request_sha256",
+        "scope",
+        "root_task_id",
+        "topology_generation",
+        "tasks",
+        "members",
+        "links",
+        "initial_state"
+      ],
+      "properties": {
+        "create_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "kanban",
+            "hm-loop"
+          ],
+          "minLength": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$",
+          "minLength": 1
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskAuthorityV1"
+          },
+          "minItems": 1
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphGenerationMemberV1"
+          },
+          "minItems": 1
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphGenerationLinkV1"
+          },
+          "minItems": 0
+        },
+        "initial_state": {
+          "type": "string",
+          "enum": [
+            "staged",
+            "active"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "ConsumeEventBatchRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controller_authority",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "root_task_id",
+        "topology_generation",
+        "controller_lease_generation",
+        "controller_fence",
+        "event_ids",
+        "decision_code",
+        "decision_id",
+        "decision_sha256",
+        "policy_sha256",
+        "evidence_hash",
+        "canonical_preimage",
+        "canonical_preimage_sha256"
+      ],
+      "properties": {
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "controller_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "decision_code": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "hold"
+          ]
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "canonical_preimage": {
+          "type": "string",
+          "minLength": 2
+        },
+        "canonical_preimage_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "EventOutboxV4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "event_id",
+        "target_id",
+        "controller_authority",
+        "payload_sha256",
+        "state",
+        "lease_owner",
+        "lease_token",
+        "lease_fence",
+        "lease_generation",
+        "lease_expires_at",
+        "attempt_no",
+        "max_attempts",
+        "next_attempt_at",
+        "passive_receipt_sha256",
+        "wake_receipt_sha256",
+        "ack_receipt_sha256",
+        "reason_code",
+        "dead_letter_reason",
+        "created_at",
+        "updated_at",
+        "reason_sha256"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controller_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "leased",
+            "passive_delivered",
+            "wake_delivered",
+            "acknowledged",
+            "retry_pending",
+            "dead_letter"
+          ]
+        },
+        "lease_owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lease_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lease_fence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lease_expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "next_attempt_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "passive_receipt_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wake_receipt_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ack_receipt_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dead_letter_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updated_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "dead_letter"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "reason_code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "dead_letter_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "reason_sha256",
+              "reason_code",
+              "dead_letter_reason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "retry_pending"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "reason_code": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "reason_sha256",
+              "reason_code"
+            ]
+          }
+        }
+      ]
+    },
+    "GraphCreatedV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_task_id",
+        "topology_generation",
+        "state",
+        "topology_digest",
+        "task_ids",
+        "link_count",
+        "created"
+      ],
+      "properties": {
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "staged",
+            "active"
+          ]
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "link_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ActivatedGraphV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_task_id",
+        "topology_generation",
+        "activation_epoch",
+        "topology_digest",
+        "activated_at"
+      ],
+      "properties": {
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activation_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "activated_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "KanbanDecisionRefV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "decision_sha256",
+        "canonical_preimage_sha256",
+        "event_set_sha256",
+        "event_ids",
+        "replayed"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "canonical_preimage_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "event_set_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SealGraphRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "decision_sha256",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "root_task_id",
+        "topology_generation",
+        "activation_epoch",
+        "topology_digest",
+        "terminal_task_ids",
+        "terminal_task_run_ids",
+        "terminal_event_ids",
+        "producer_hashes",
+        "report_hashes",
+        "controller_fence",
+        "now"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activation_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "terminal_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "terminal_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "terminal_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "producer_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "report_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "controller_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "AckRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "decision_sha256",
+        "sealed_token_id",
+        "sealed_token_sha256",
+        "event_ids",
+        "now"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sealed_token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sealed_token_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "AckResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "sealed_token_id",
+        "acknowledged_event_ids",
+        "inserted_count",
+        "replayed_count"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sealed_token_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acknowledged_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "inserted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "replayed_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CapacityRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "hm_loop_run_id",
+        "profile",
+        "provider_family",
+        "slot_cost",
+        "ttl_seconds",
+        "requested_at"
+      ],
+      "properties": {
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slot_cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requested_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CapacityReservationV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "hm_loop_run_id",
+        "profile",
+        "provider_family",
+        "slot_cost",
+        "state",
+        "reserved_at",
+        "expires_at"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slot_cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "const": "reserved"
+        },
+        "reserved_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CapacityBindRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "task_run_id",
+        "worker_pid",
+        "board_claim_fence",
+        "ttl_seconds",
+        "bound_at"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "bound_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CapacityLeaseV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "reservation_token",
+        "fence",
+        "board_claim_fence",
+        "hm_loop_run_id",
+        "profile",
+        "provider_family",
+        "slot_cost",
+        "state",
+        "bound_at",
+        "renewed_at",
+        "expires_at",
+        "released_at",
+        "reservation_fence"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slot_cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "expired_pending_reap",
+            "released"
+          ]
+        },
+        "bound_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "renewed_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "released_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "CapacityBindResultV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease",
+        "board_run_verified",
+        "bound"
+      ],
+      "properties": {
+        "lease": {
+          "$ref": "#/$defs/CapacityLeaseV3"
+        },
+        "board_run_verified": {
+          "const": true
+        },
+        "bound": {
+          "const": true
+        }
+      }
+    },
+    "CapacityRenewRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "fence",
+        "ttl_seconds",
+        "renewed_at",
+        "lease_id",
+        "reservation_id",
+        "reservation_token",
+        "reservation_fence",
+        "board_claim_fence"
+      ],
+      "properties": {
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "renewed_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "CapacityRenewResultV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease",
+        "renewed",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "lease": {
+          "$ref": "#/$defs/CapacityLeaseV3"
+        },
+        "renewed": {
+          "const": true
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "CapacityReleaseRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "fence",
+        "outcome",
+        "terminal_proof_sha256",
+        "released_at",
+        "lease_id",
+        "reservation_id",
+        "reservation_token",
+        "reservation_fence",
+        "board_claim_fence"
+      ],
+      "properties": {
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "blocked",
+            "failed",
+            "cancelled",
+            "reconciled_dead_pid"
+          ]
+        },
+        "terminal_proof_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "released_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "CapacityReleaseResultV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "released",
+        "state",
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "fence",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "released": {
+          "const": true
+        },
+        "state": {
+          "const": "released"
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "OutboxClaimRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "lease_fence",
+        "now",
+        "ttl_seconds",
+        "limit"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxBatchV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "lease_fence",
+        "lease_expires_at",
+        "items"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_expires_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventOutboxV4"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "OutboxLeaseRenewRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_ids",
+        "owner",
+        "lease_fence",
+        "expected_lease_generation",
+        "now",
+        "ttl_seconds"
+      ],
+      "properties": {
+        "outbox_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxLeaseRenewResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "renewed_outbox_ids",
+        "lease_generation",
+        "lease_expires_at"
+      ],
+      "properties": {
+        "renewed_outbox_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lease_expires_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxTransitionRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "owner",
+        "lease_fence",
+        "expected_lease_generation",
+        "from_state",
+        "to_state",
+        "receipt_sha256",
+        "now"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "from_state": {
+          "type": "string",
+          "enum": [
+            "leased",
+            "passive_delivered",
+            "wake_delivered"
+          ]
+        },
+        "to_state": {
+          "type": "string",
+          "enum": [
+            "passive_delivered",
+            "wake_delivered",
+            "acknowledged"
+          ]
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxTransitionResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "state",
+        "transitioned"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "passive_delivered",
+            "wake_delivered",
+            "acknowledged"
+          ]
+        },
+        "transitioned": {
+          "const": true
+        }
+      }
+    },
+    "OutboxRetryRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "owner",
+        "lease_fence",
+        "expected_lease_generation",
+        "attempt_no",
+        "max_attempts",
+        "reason_code",
+        "reason_sha256",
+        "next_attempt_at",
+        "now"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "next_attempt_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxRetryResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "state",
+        "attempt_no",
+        "next_attempt_at",
+        "reason_sha256",
+        "hold_receipt_sha256"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "const": "retry_pending"
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "next_attempt_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hold_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "OutboxDeadLetterRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "owner",
+        "lease_fence",
+        "expected_lease_generation",
+        "attempt_no",
+        "max_attempts",
+        "reason_code",
+        "dead_letter_reason",
+        "reason_sha256",
+        "now"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dead_letter_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "OutboxDeadLetterResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "state",
+        "attempt_no",
+        "reason_code",
+        "dead_letter_reason",
+        "reason_sha256",
+        "hold_receipt_sha256"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "const": "dead_letter"
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dead_letter_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hold_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "OutboxReclaimRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "observed_lease_generation",
+        "observed_lease_fence",
+        "now",
+        "reason_code",
+        "reason_sha256"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observed_lease_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "lease_expired",
+            "owner_dead",
+            "operator_recovery"
+          ]
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "OutboxReclaimResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outbox_id",
+        "state",
+        "new_lease_generation",
+        "reclaimed",
+        "reason_code",
+        "reason_sha256",
+        "hold_receipt_sha256"
+      ],
+      "properties": {
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "const": "retry_pending"
+        },
+        "new_lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reclaimed": {
+          "const": true
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "lease_expired",
+            "owner_dead",
+            "operator_recovery"
+          ]
+        },
+        "reason_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hold_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "AncestorInodeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_path",
+        "device",
+        "inode",
+        "mode",
+        "uid",
+        "gid"
+      ],
+      "properties": {
+        "canonical_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "TaskScopeRequestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_run_id",
+        "operation",
+        "target_path"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "file_read",
+            "file_write",
+            "file_patch",
+            "file_search",
+            "terminal_cwd",
+            "terminal_input",
+            "browser_upload",
+            "browser_download"
+          ]
+        },
+        "target_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attachment_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "TaskScopeDecisionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "reason_code",
+        "canonical_path",
+        "matched_root",
+        "ancestor_chain",
+        "open_flags",
+        "authority_sha256",
+        "decision_sha256"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "ALLOW_WORKSPACE",
+            "ALLOW_ARTIFACT",
+            "ALLOW_APPROVED_READ",
+            "DENY_OUTSIDE_ROOTS",
+            "DENY_SYMLINK",
+            "DENY_ANCESTOR_CHANGED",
+            "DENY_HARDLINK_ESCAPE",
+            "DENY_SPECIAL_FILE",
+            "DENY_DEVICE_CHANGE",
+            "DENY_AUTHORITY_MISSING",
+            "DENY_AUTHORITY_HASH_MISMATCH",
+            "DENY_ATTACHMENT_NOT_APPROVED"
+          ]
+        },
+        "canonical_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "matched_root": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^/"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ancestor_chain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AncestorInodeV1"
+          },
+          "minItems": 1
+        },
+        "open_flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "O_PATH",
+              "O_DIRECTORY",
+              "O_NOFOLLOW",
+              "O_CLOEXEC",
+              "O_RDONLY",
+              "O_WRONLY",
+              "O_CREAT",
+              "O_EXCL"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "authority_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "FileIdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "exists",
+        "device",
+        "inode",
+        "mode",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "device": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "inode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "mode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ObserveRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "format",
+        "no_init",
+        "no_migrate",
+        "no_recompute",
+        "expected_schema_version"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "format": {
+          "const": "json"
+        },
+        "no_init": {
+          "const": true
+        },
+        "no_migrate": {
+          "const": true
+        },
+        "no_recompute": {
+          "const": true
+        },
+        "expected_schema_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ObserveReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database_identity",
+        "task_id",
+        "schema_version",
+        "query_only",
+        "uri_mode",
+        "before_files",
+        "after_files",
+        "before_logical_hash",
+        "after_logical_hash",
+        "task_count",
+        "run_count",
+        "event_count",
+        "total_changes",
+        "target_write_syscalls",
+        "observed_at"
+      ],
+      "properties": {
+        "database_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "query_only": {
+          "const": true
+        },
+        "uri_mode": {
+          "const": "ro"
+        },
+        "before_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileIdentityV1"
+          },
+          "minItems": 1
+        },
+        "after_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileIdentityV1"
+          },
+          "minItems": 1
+        },
+        "before_logical_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "after_logical_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "run_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_changes": {
+          "const": 0
+        },
+        "target_write_syscalls": {
+          "const": 0
+        },
+        "observed_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "TaskScopeAuthorityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "task_run_id",
+        "task_authority_sha256",
+        "workspace_root",
+        "artifact_root",
+        "approved_inputs",
+        "approved_attachments",
+        "ancestor_snapshot",
+        "ancestor_snapshot_sha256",
+        "canonical_preimage_sha256",
+        "authority_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-task-scope-authority/v1"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "task_authority_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workspace_root": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "artifact_root": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "approved_inputs": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "input_id",
+              "root",
+              "content_sha256",
+              "read_only"
+            ],
+            "properties": {
+              "input_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "root": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "content_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "read_only": {
+                "const": true
+              }
+            }
+          }
+        },
+        "approved_attachments": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "attachment_id",
+              "root",
+              "content_sha256",
+              "read_only"
+            ],
+            "properties": {
+              "attachment_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "root": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "content_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "read_only": {
+                "const": true
+              }
+            }
+          }
+        },
+        "ancestor_snapshot": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/AncestorInodeV1"
+          }
+        },
+        "ancestor_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "canonical_preimage_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CancelCapacityReservationRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "reason_code",
+        "cancelled_at"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "pre_run_crash",
+            "board_run_create_failed",
+            "bind_failed",
+            "operator_recovery"
+          ]
+        },
+        "cancelled_at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CancelCapacityReservationResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "state",
+        "cancelled",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "const": "cancelled"
+        },
+        "cancelled": {
+          "const": true
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "CapacityReservationReconcileRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "expected_state",
+        "board_run_observation",
+        "observation_sha256",
+        "now"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_state": {
+          "const": "reserved"
+        },
+        "board_run_observation": {
+          "type": "string",
+          "enum": [
+            "absent",
+            "created_unbound",
+            "unknown"
+          ]
+        },
+        "observation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CapacityReservationReconcileResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "reservation_token",
+        "reservation_fence",
+        "action",
+        "state",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "cancelled",
+            "held",
+            "already_cancelled"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "cancelled",
+            "reserved"
+          ]
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "BoundCapacityLeaseReconcileRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "reservation_token",
+        "reservation_fence",
+        "fence",
+        "board_claim_fence",
+        "expected_state",
+        "board_observation_sha256",
+        "pid_observation_sha256",
+        "now"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "expired_pending_reap"
+          ]
+        },
+        "board_observation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "pid_observation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "now": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "BoundCapacityLeaseReconcileResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "reservation_id",
+        "board_db_identity",
+        "task_id",
+        "task_run_id",
+        "worker_pid",
+        "reservation_token",
+        "reservation_fence",
+        "fence",
+        "board_claim_fence",
+        "action",
+        "state",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_db_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reservation_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reservation_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board_claim_fence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "renewed",
+            "released",
+            "held"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "expired_pending_reap",
+            "released"
+          ]
+        },
+        "receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "x-schema-id": "hm-loop-protocol-contracts/v4",
+  "x-contracts": {
+    "graph_and_task_authority": {
+      "tables": [
+        "task_authority",
+        "kanban_graph_generations",
+        "graph_generation_members",
+        "graph_generation_links"
+      ],
+      "states": [
+        "staged",
+        "active",
+        "finalized",
+        "retired"
+      ],
+      "apis": [
+        {
+          "name": "create_task_graph",
+          "signature": "create_task_graph(conn, request: GraphCreateRequestV1) -> GraphCreatedV1",
+          "request_ref": "#/$defs/GraphCreateRequestV1",
+          "result_ref": "#/$defs/GraphCreatedV1"
+        },
+        {
+          "name": "activate_task_graph",
+          "signature": "activate_task_graph(conn, root_task_id: str, topology_generation: int, expected_digest: str) -> ActivatedGraphV1",
+          "request_ref": null,
+          "result_ref": "#/$defs/ActivatedGraphV1"
+        },
+        {
+          "name": "create_retry_graph",
+          "signature": "create_retry_graph(conn, request: GraphCreateRequestV1) -> GraphCreatedV1",
+          "request_ref": "#/$defs/GraphCreateRequestV1",
+          "result_ref": "#/$defs/GraphCreatedV1"
+        }
+      ],
+      "rules": [
+        "active/finalized member/link/topology rows are immutable",
+        "retry/remediation uses fresh root, task IDs and links",
+        "normal task lifecycle fields remain mutable"
+      ],
+      "module": "hermes_cli/kanban_db.py"
+    },
+    "outbox_and_delivery": {
+      "states": [
+        "pending",
+        "leased",
+        "passive_delivered",
+        "wake_delivered",
+        "acknowledged",
+        "retry_pending",
+        "dead_letter"
+      ],
+      "allowed_transitions": [
+        [
+          "pending",
+          "leased"
+        ],
+        [
+          "retry_pending",
+          "leased"
+        ],
+        [
+          "leased",
+          "passive_delivered"
+        ],
+        [
+          "passive_delivered",
+          "wake_delivered"
+        ],
+        [
+          "wake_delivered",
+          "acknowledged"
+        ],
+        [
+          "leased",
+          "retry_pending"
+        ],
+        [
+          "passive_delivered",
+          "retry_pending"
+        ],
+        [
+          "wake_delivered",
+          "retry_pending"
+        ],
+        [
+          "leased",
+          "dead_letter"
+        ],
+        [
+          "passive_delivered",
+          "dead_letter"
+        ],
+        [
+          "wake_delivered",
+          "dead_letter"
+        ],
+        [
+          "retry_pending",
+          "dead_letter"
+        ]
+      ],
+      "apis": [
+        {
+          "name": "claim_outbox_batch",
+          "signature": "claim_outbox_batch(conn, request: OutboxClaimRequestV1) -> OutboxBatchV1",
+          "request_ref": "#/$defs/OutboxClaimRequestV1",
+          "result_ref": "#/$defs/OutboxBatchV1"
+        },
+        {
+          "name": "renew_outbox_lease",
+          "signature": "renew_outbox_lease(conn, request: OutboxLeaseRenewRequestV1) -> OutboxLeaseRenewResultV1",
+          "request_ref": "#/$defs/OutboxLeaseRenewRequestV1",
+          "result_ref": "#/$defs/OutboxLeaseRenewResultV1"
+        },
+        {
+          "name": "transition_outbox_delivery",
+          "signature": "transition_outbox_delivery(conn, request: OutboxTransitionRequestV1) -> OutboxTransitionResultV1",
+          "request_ref": "#/$defs/OutboxTransitionRequestV1",
+          "result_ref": "#/$defs/OutboxTransitionResultV1"
+        },
+        {
+          "name": "retry_outbox_delivery",
+          "signature": "retry_outbox_delivery(conn, request: OutboxRetryRequestV1) -> OutboxRetryResultV1",
+          "request_ref": "#/$defs/OutboxRetryRequestV1",
+          "result_ref": "#/$defs/OutboxRetryResultV1"
+        },
+        {
+          "name": "dead_letter_outbox_delivery",
+          "signature": "dead_letter_outbox_delivery(conn, request: OutboxDeadLetterRequestV1) -> OutboxDeadLetterResultV1",
+          "request_ref": "#/$defs/OutboxDeadLetterRequestV1",
+          "result_ref": "#/$defs/OutboxDeadLetterResultV1"
+        },
+        {
+          "name": "reclaim_outbox_lease",
+          "signature": "reclaim_outbox_lease(conn, request: OutboxReclaimRequestV1) -> OutboxReclaimResultV1",
+          "request_ref": "#/$defs/OutboxReclaimRequestV1",
+          "result_ref": "#/$defs/OutboxReclaimResultV1"
+        }
+      ],
+      "rules": [
+        "all transitions are CAS on outbox_id, state, lease_fence and lease_generation",
+        "attempt_no increments exactly once per failed lease; attempt_no >= max_attempts requires dead_letter",
+        "passive/wake/ack receipts are independent immutable hashes",
+        "dead_letter request/result both require and return reason_code, dead_letter_reason and reason_sha256",
+        "reclaim-to-retry request/result both require and return reason_code and reason_sha256; result also returns hold_receipt_sha256",
+        "reason_sha256 is derived only from the exact canonical reason_hash_contract preimage before any CAS mutation",
+        "EventOutboxV4, API result and canonical hold receipt bind the same immutable reason_sha256",
+        "exact replay with the same reason_sha256 returns the same result and hold receipt; a different or non-derived reason_sha256 returns OUTBOX_REASON_HASH_CONFLICT without mutation"
+      ],
+      "module": "hermes_cli/kanban_db.py",
+      "reason_hash_contract": {
+        "algorithm": "sha256",
+        "encoding": "UTF-8",
+        "serialization": "compact JSON, object keys sorted, no terminal LF",
+        "preimages": {
+          "dead_letter": {
+            "exact_keys": [
+              "dead_letter_reason",
+              "outbox_id",
+              "reason_code",
+              "transition"
+            ],
+            "constant_fields": {
+              "transition": "dead_letter"
+            },
+            "derivation": "reason_sha256 = SHA-256(canonical bytes of the exact-key object reconstructed from OutboxDeadLetterRequestV1)",
+            "request_ref": "#/$defs/OutboxDeadLetterRequestV1",
+            "result_ref": "#/$defs/OutboxDeadLetterResultV1"
+          },
+          "reclaim_to_retry": {
+            "exact_keys": [
+              "outbox_id",
+              "reason_code",
+              "transition"
+            ],
+            "constant_fields": {
+              "transition": "reclaim_to_retry"
+            },
+            "derivation": "reason_sha256 = SHA-256(canonical bytes of the exact-key object reconstructed from OutboxReclaimRequestV1)",
+            "request_ref": "#/$defs/OutboxReclaimRequestV1",
+            "result_ref": "#/$defs/OutboxReclaimResultV1"
+          }
+        },
+        "state_binding": "EventOutboxV4.reason_sha256 equals the validated request hash and is immutable; retry_pending and dead_letter retain nonempty reason_code, and dead_letter also retains dead_letter_reason",
+        "hold_receipt_preimages": {
+          "dead_letter": {
+            "exact_keys": [
+              "attempt_no",
+              "dead_letter_reason",
+              "outbox_id",
+              "reason_code",
+              "reason_sha256",
+              "state"
+            ],
+            "constant_fields": {
+              "state": "dead_letter"
+            }
+          },
+          "reclaim_to_retry": {
+            "exact_keys": [
+              "new_lease_generation",
+              "outbox_id",
+              "reason_code",
+              "reason_sha256",
+              "state"
+            ],
+            "constant_fields": {
+              "state": "retry_pending"
+            }
+          },
+          "derivation": "hold_receipt_sha256 = SHA-256(compact sorted-key UTF-8 JSON of the selected exact-key object without terminal LF)"
+        },
+        "replay": {
+          "same_hash": "return the same state/result/hold receipt without mutation",
+          "changed_hash": "OUTBOX_REASON_HASH_CONFLICT; zero mutation",
+          "derivation_mismatch": "OUTBOX_REASON_HASH_CONFLICT; zero mutation before CAS"
+        }
+      }
+    },
+    "event_consumption_and_finalization": {
+      "apis": [
+        {
+          "name": "consume_event_batch",
+          "signature": "consume_event_batch(conn, request: ConsumeEventBatchRequestV1) -> KanbanDecisionRefV1",
+          "request_ref": "#/$defs/ConsumeEventBatchRequestV1",
+          "result_ref": "#/$defs/KanbanDecisionRefV1"
+        },
+        {
+          "name": "finalize_task_graph",
+          "signature": "finalize_task_graph(conn, request: SealGraphRequestV1) -> SealedGraphTokenV1",
+          "request_ref": "#/$defs/SealGraphRequestV1",
+          "result_ref": "#/$defs/SealedGraphTokenV1"
+        },
+        {
+          "name": "acknowledge_decision_events",
+          "signature": "acknowledge_decision_events(conn, request: AckRequestV1) -> AckResultV1",
+          "request_ref": "#/$defs/AckRequestV1",
+          "result_ref": "#/$defs/AckResultV1"
+        }
+      ],
+      "replay_identity": [
+        "decision_id",
+        "decision_sha256",
+        "policy_sha256",
+        "evidence_hash",
+        "canonical_preimage_sha256",
+        "ordered_event_ids"
+      ],
+      "canonical_preimage": "compact UTF-8 sorted-key JSON without terminal LF; canonical_preimage_sha256 must hash the exact bytes",
+      "rules": [
+        "same complete replay identity returns the same KanbanDecisionRefV1",
+        "same decision_id with any different identity field returns DECISION_IDENTITY_CONFLICT",
+        "any event owned by a different decision rejects the whole transaction as EVENT_BATCH_OVERLAP and inserts nothing"
+      ],
+      "module": "hermes_cli/kanban_db.py"
+    },
+    "global_capacity": {
+      "states": [
+        "reserved",
+        "cancelled",
+        "active",
+        "expired_pending_reap",
+        "released"
+      ],
+      "apis": [
+        {
+          "name": "reserve_capacity",
+          "signature": "reserve_capacity(request: CapacityRequestV2) -> CapacityReservationV2",
+          "request_ref": "#/$defs/CapacityRequestV2",
+          "result_ref": "#/$defs/CapacityReservationV2"
+        },
+        {
+          "name": "cancel_capacity_reservation",
+          "signature": "cancel_capacity_reservation(request: CancelCapacityReservationRequestV1) -> CancelCapacityReservationResultV1",
+          "request_ref": "#/$defs/CancelCapacityReservationRequestV1",
+          "result_ref": "#/$defs/CancelCapacityReservationResultV1"
+        },
+        {
+          "name": "bind_capacity",
+          "signature": "bind_capacity(request: CapacityBindRequestV2) -> CapacityBindResultV2",
+          "request_ref": "#/$defs/CapacityBindRequestV2",
+          "result_ref": "#/$defs/CapacityBindResultV2"
+        },
+        {
+          "name": "renew_capacity",
+          "signature": "renew_capacity(request: CapacityRenewRequestV2) -> CapacityRenewResultV2",
+          "request_ref": "#/$defs/CapacityRenewRequestV2",
+          "result_ref": "#/$defs/CapacityRenewResultV2"
+        },
+        {
+          "name": "release_capacity",
+          "signature": "release_capacity(request: CapacityReleaseRequestV2) -> CapacityReleaseResultV2",
+          "request_ref": "#/$defs/CapacityReleaseRequestV2",
+          "result_ref": "#/$defs/CapacityReleaseResultV2"
+        },
+        {
+          "name": "reconcile_capacity_reservations",
+          "signature": "reconcile_capacity_reservations(request: CapacityReservationReconcileRequestV1) -> CapacityReservationReconcileResultV1",
+          "request_ref": "#/$defs/CapacityReservationReconcileRequestV1",
+          "result_ref": "#/$defs/CapacityReservationReconcileResultV1"
+        },
+        {
+          "name": "reconcile_bound_capacity_leases",
+          "signature": "reconcile_bound_capacity_leases(request: BoundCapacityLeaseReconcileRequestV1) -> BoundCapacityLeaseReconcileResultV1",
+          "request_ref": "#/$defs/BoundCapacityLeaseReconcileRequestV1",
+          "result_ref": "#/$defs/BoundCapacityLeaseReconcileResultV1"
+        }
+      ],
+      "rules": [
+        "reserve CAS occurs before board run creation and CapacityRequestV2 contains no task_run_id",
+        "pre-run crash or board-run creation failure invokes cancel_capacity_reservation with exact reservation_id/board/task/token/fence",
+        "bind verifies exact reservation and board run/PID/claim fence before reserved-to-active CAS",
+        "renew and release CAS every lease/reservation/board/task/run/PID/token/fence field and return immutable receipt_sha256",
+        "reserved reconciliation and bound-lease reconciliation are separate APIs with exact identities and per-record receipts",
+        "unknown board/PID/identity evidence holds the slot; expiry alone never frees capacity"
+      ],
+      "module": "hermes_cli/kanban_capacity.py"
+    },
+    "task_scope_path_authorization": {
+      "module": "agent/task_scope_policy.py",
+      "authority_ref": "#/$defs/TaskScopeAuthorityV1",
+      "api": {
+        "name": "authorize_task_path",
+        "signature": "authorize_task_path(request: TaskScopeRequestV2) -> TaskScopeDecisionV1",
+        "request_ref": "#/$defs/TaskScopeRequestV2",
+        "result_ref": "#/$defs/TaskScopeDecisionV1"
+      },
+      "host_authority_loader": {
+        "name": "load_task_scope_authority",
+        "signature": "load_task_scope_authority(task_id: str, task_run_id: int) -> TaskScopeAuthorityV1",
+        "result_ref": "#/$defs/TaskScopeAuthorityV1"
+      },
+      "tool_integrations": [
+        "tools/file_tools.py",
+        "tools/terminal_tool.py",
+        "browser upload/download adapter",
+        "agent/tool_authorization.py final dispatch"
+      ],
+      "rules": [
+        "TaskScopeRequestV2 contains only task_id, task_run_id, operation, target_path and optional attachment_id; caller cannot supply roots, authority hashes, ancestors or policy toggles",
+        "authorize_task_path host-loads immutable TaskScopeAuthorityV1 by task_id/task_run_id before resolving target_path",
+        "TaskScopeAuthorityV1 authority_sha256 binds task_authority_sha256, workspace/artifact roots, approved input and attachment hashes, and ancestor_snapshot_sha256 using compact sorted UTF-8 JSON without terminal LF",
+        "missing/hash-mismatched host authority denies before filesystem access and before handler invocation",
+        "open each ancestor fd-relative with O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC and compare device/inode/mode/uid/gid to the immutable host snapshot",
+        "write paths stay under host-loaded workspace/artifact roots; approved inputs/attachments are read-only",
+        "forged-root/ancestor fields are rejected by additionalProperties=false and cannot influence authorization"
+      ]
+    },
+    "readonly_observe": {
+      "module": "hermes_cli/kanban_observe.py",
+      "api": {
+        "name": "observe_board_read_only",
+        "signature": "observe_board_read_only(db_path: pathlib.Path, request: ObserveRequestV1) -> ObserveReportV1",
+        "request_ref": "#/$defs/ObserveRequestV1",
+        "result_ref": "#/$defs/ObserveReportV1"
+      },
+      "command": "hermes kanban observe --db <ABSOLUTE_DB_PATH> --task <TASK_ID> --format json --no-init --no-migrate --no-recompute",
+      "rules": [
+        "URI mode=ro",
+        "PRAGMA query_only=ON",
+        "total_changes=0",
+        "zero target write syscalls",
+        "future schema rejects before query"
+      ]
+    },
+    "protocol_validation": {
+      "module": "hermes_cli/kanban_contracts.py",
+      "apis": [
+        {
+          "name": "validate_protocol",
+          "signature": "validate_protocol(contract_name: str, payload: Mapping[str, Any]) -> Any"
+        }
+      ],
+      "rules": [
+        "reject duplicate JSON keys before schema validation",
+        "resolve only protocol-schemas-v5 definitions",
+        "additionalProperties=false is enforced at every closed object boundary"
+      ]
+    },
+    "subprocess_sandbox": {
+      "module": "agent/subprocess_sandbox.py",
+      "apis": [
+        {
+          "name": "build_subprocess_sandbox_argv",
+          "signature": "build_subprocess_sandbox_argv(authority: TaskScopeAuthorityV1, command: Sequence[str]) -> Sequence[str]"
+        },
+        {
+          "name": "launch_sandboxed_subprocess",
+          "signature": "launch_sandboxed_subprocess(authority: TaskScopeAuthorityV1, command: Sequence[str]) -> int"
+        }
+      ],
+      "rules": [
+        "agent and Kanban lifecycle remain host-side",
+        "only terminal/code child enters pinned bwrap",
+        "clearenv, minimal binds and default-deny network; no weak fallback"
+      ]
+    },
+    "final_tool_authorization": {
+      "module": "agent/tool_authorization.py",
+      "apis": [
+        {
+          "name": "authorize_tool_dispatch",
+          "signature": "authorize_tool_dispatch(tool_name: str, args: Mapping[str, Any], task_scope: TaskScopeDecisionV1) -> Mapping[str, Any]"
+        },
+        {
+          "name": "validate_tool_generation",
+          "signature": "validate_tool_generation(candidate: Mapping[str, Any]) -> Mapping[str, Any]"
+        },
+        {
+          "name": "swap_tool_generation",
+          "signature": "swap_tool_generation(validated: Mapping[str, Any]) -> None"
+        }
+      ],
+      "rules": [
+        "all managed, legacy and plugin paths cross one final fail-closed boundary",
+        "reload swaps only a fully validated generation"
+      ]
+    }
+  },
+  "x-negative-ids": [
+    "UNEXPECTED_PROPERTY",
+    "MISSING_REQUIRED",
+    "WRONG_TYPE",
+    "DUPLICATE_JSON_KEY",
+    "EVENT_BATCH_OVERLAP",
+    "DECISION_IDENTITY_CONFLICT",
+    "POST_ACTIVATION_TOPOLOGY_MUTATION",
+    "CAPACITY_RESERVATION_CONFLICT",
+    "CAPACITY_BIND_CONFLICT",
+    "CAPACITY_FENCE_STALE",
+    "OUTBOX_TRANSITION_CONFLICT",
+    "OUTBOX_ATTEMPT_EXHAUSTED",
+    "TASK_SCOPE_DENIED",
+    "ANCESTOR_INODE_CHANGED",
+    "OBSERVE_UNSUPPORTED_SCHEMA",
+    "CAPACITY_RESERVATION_CANCEL_CONFLICT",
+    "CAPACITY_RESERVATION_RECONCILE_CONFLICT",
+    "CAPACITY_BOUND_LEASE_RECONCILE_CONFLICT",
+    "TASK_SCOPE_AUTHORITY_MISMATCH",
+    "OUTBOX_REASON_HASH_CONFLICT",
+    "DEAD_LETTER_REASON_REQUIRED",
+    "RETRY_REASON_HASH_REQUIRED"
+  ],
+  "x-public-contract-symbol-projection": {
+    "selection": "all signature-bearing entries under x-contracts[*].apis, x-contracts[*].api and x-contracts[*].host_authority_loader",
+    "record_fields": [
+      "module",
+      "name",
+      "signature"
+    ],
+    "ordering": "ascending (module, name, signature)",
+    "canonicalization": "compact UTF-8 sorted-key JSON array without terminal LF",
+    "receipt": "source-receipt-r8.json#/public_contract_symbols",
+    "implementation_only_symbols_excluded": true
+  }
+}

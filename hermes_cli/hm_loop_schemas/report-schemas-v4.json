@@ -1,0 +1,4991 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/hm-loop/report-schemas-v4.json",
+  "title": "hm-loop exact runtime report schemas v4",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/MigrationPreflightReportV1"
+    },
+    {
+      "$ref": "#/$defs/GraphAuthorityReportV1"
+    },
+    {
+      "$ref": "#/$defs/OutboxReplayReportV1"
+    },
+    {
+      "$ref": "#/$defs/CapacityRoutingReportV1"
+    },
+    {
+      "$ref": "#/$defs/WorkspaceIsolationReportV1"
+    },
+    {
+      "$ref": "#/$defs/VerdictIntegrityReportV1"
+    },
+    {
+      "$ref": "#/$defs/AuthorizationReportV1"
+    },
+    {
+      "$ref": "#/$defs/TestReportV1"
+    },
+    {
+      "$ref": "#/$defs/CiReceiptReportV1"
+    },
+    {
+      "$ref": "#/$defs/PromotionPlanV3ReportV1"
+    },
+    {
+      "$ref": "#/$defs/CanaryReportV1"
+    },
+    {
+      "$ref": "#/$defs/RollbackReportV1"
+    }
+  ],
+  "$defs": {
+    "ArtifactHashesR10": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "design.md",
+        "threat-model.md",
+        "failure-matrix.md",
+        "implementation-plan.md",
+        "state.json",
+        "board-topology.json",
+        "protocol-schemas-v5.json",
+        "report-schemas-v4.json",
+        "source-receipt-r8.json",
+        "semantic-reconciliation-ledger-r2.json",
+        "refreeze-manifest-r3.json"
+      ],
+      "properties": {
+        "design.md": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "threat-model.md": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "failure-matrix.md": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "implementation-plan.md": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "board-topology.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "protocol-schemas-v5.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "report-schemas-v4.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source-receipt-r8.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "semantic-reconciliation-ledger-r2.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "refreeze-manifest-r3.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "minProperties": 11,
+      "maxProperties": 11
+    },
+    "IntegrationManifestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_receipt_schema",
+        "source_receipt_sha256",
+        "source_outer_candidate_commit",
+        "source_outer_candidate_tree",
+        "source_core_candidate_commit",
+        "source_core_candidate_tree",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "outer_diff_sha256",
+        "core_integration_commit",
+        "core_integration_tree",
+        "core_diff_sha256",
+        "working_trees_clean",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-integration-manifest/v2"
+        },
+        "source_receipt_schema": {
+          "const": "hm-loop-r8-source-receipt/v1"
+        },
+        "source_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_outer_candidate_commit": {
+          "const": "0b19dda457b944813ff5e59cfde0b570b340b7ad"
+        },
+        "source_outer_candidate_tree": {
+          "const": "f9b3e5dff428c2900028610426fae76562e850f8"
+        },
+        "source_core_candidate_commit": {
+          "const": "2b67b81b5ecb9e3286eb9df193819ff559eb1476"
+        },
+        "source_core_candidate_tree": {
+          "const": "746e69f6bc0ea3067731927aecb7ceaf3190c918"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_diff_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_diff_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "working_trees_clean": {
+          "const": true
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "R10VerdictAuthorityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "design_task_id",
+        "security_reviewer_task_id",
+        "security_reviewer_profile",
+        "security_reviewer_model",
+        "security_reviewer_provider",
+        "deterministic_tester_task_id",
+        "deterministic_tester_profile",
+        "deterministic_tester_model",
+        "deterministic_tester_provider",
+        "final_acceptance_task_id",
+        "final_acceptance_profile",
+        "final_acceptance_model",
+        "final_acceptance_provider"
+      ],
+      "properties": {
+        "design_task_id": {
+          "const": "t_edbc954e"
+        },
+        "security_reviewer_task_id": {
+          "const": "t_a680d55e"
+        },
+        "security_reviewer_profile": {
+          "const": "code-reviewer"
+        },
+        "security_reviewer_model": {
+          "const": "gpt-5.6-sol"
+        },
+        "security_reviewer_provider": {
+          "const": "openai-codex"
+        },
+        "deterministic_tester_task_id": {
+          "const": "t_ef602be6"
+        },
+        "deterministic_tester_profile": {
+          "const": "tester"
+        },
+        "deterministic_tester_model": {
+          "const": "gpt-5.6-terra"
+        },
+        "deterministic_tester_provider": {
+          "const": "openai-codex"
+        },
+        "final_acceptance_task_id": {
+          "const": "t_6c23534b"
+        },
+        "final_acceptance_profile": {
+          "const": "kanban-verifier"
+        },
+        "final_acceptance_model": {
+          "const": "gpt-5.6-luna"
+        },
+        "final_acceptance_provider": {
+          "const": "openai-codex"
+        }
+      }
+    },
+    "MigrationPreflightReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/migration-preflight/v3"
+        },
+        "report_name": {
+          "const": "migration-preflight"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "database_identities",
+            "future_schema_no_write_tests",
+            "crash_boundaries_executed",
+            "logical_hash_unchanged_on_reject"
+          ],
+          "properties": {
+            "database_identities": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 3,
+              "uniqueItems": true
+            },
+            "future_schema_no_write_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "crash_boundaries_executed": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "logical_hash_unchanged_on_reject": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "GraphAuthorityReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/graph-authority/v3"
+        },
+        "report_name": {
+          "const": "graph-authority"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generic_immediate_active_tests",
+            "hm_loop_staged_tests",
+            "activation_conflict_tests",
+            "post_activation_mutation_rejections",
+            "fresh_generation_id_tests"
+          ],
+          "properties": {
+            "generic_immediate_active_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hm_loop_staged_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "activation_conflict_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "post_activation_mutation_rejections": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "fresh_generation_id_tests": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "OutboxReplayReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/outbox-replay/v3"
+        },
+        "report_name": {
+          "const": "outbox-replay"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "terminal_outbox_atomicity_tests",
+            "overlap_transaction_rejections",
+            "disjoint_recomputations",
+            "exact_replays",
+            "per_event_ack_tests"
+          ],
+          "properties": {
+            "terminal_outbox_atomicity_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "overlap_transaction_rejections": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "disjoint_recomputations": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "exact_replays": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "per_event_ack_tests": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "CapacityRoutingReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/capacity-routing/v3"
+        },
+        "report_name": {
+          "const": "capacity-routing"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "board_count",
+            "direct_claim_tests",
+            "review_claim_tests",
+            "configured_max_slots",
+            "max_observed_slots",
+            "board_qualified_cas_tests"
+          ],
+          "properties": {
+            "board_count": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "direct_claim_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "review_claim_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "configured_max_slots": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_observed_slots": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "board_qualified_cas_tests": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "WorkspaceIsolationReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/workspace-isolation/v3"
+        },
+        "report_name": {
+          "const": "workspace-isolation"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agent_control_plane_host_side",
+            "agent_process_sandboxed",
+            "subprocess_sandbox_tests",
+            "clearenv_tests",
+            "host_secret_read_denials",
+            "task_scope_path_denials",
+            "kanban_lifecycle_tests"
+          ],
+          "properties": {
+            "agent_control_plane_host_side": {
+              "const": true
+            },
+            "agent_process_sandboxed": {
+              "const": false
+            },
+            "subprocess_sandbox_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "clearenv_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "host_secret_read_denials": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "task_scope_path_denials": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "kanban_lifecycle_tests": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "VerdictIntegrityReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/verdict-integrity/v3"
+        },
+        "report_name": {
+          "const": "verdict-integrity"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "r10_authority",
+            "security_reviewer_run_id",
+            "deterministic_tester_run_id",
+            "final_acceptance_run_id",
+            "reviewer_profiles",
+            "reviewer_models",
+            "provider_families",
+            "same_provider_fallback_disclosed",
+            "alternate_provider_probe_outcome",
+            "deterministic_suite_hashes",
+            "reviewer_evidence_hashes",
+            "reviewer_topology_digests",
+            "gate"
+          ],
+          "properties": {
+            "reviewer_profiles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            },
+            "reviewer_models": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            },
+            "provider_families": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "same_provider_fallback_disclosed": {
+              "const": true
+            },
+            "alternate_provider_probe_outcome": {
+              "const": "quota_exhausted"
+            },
+            "deterministic_suite_hashes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 1
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "r10_authority": {
+              "$ref": "#/$defs/R10VerdictAuthorityV1"
+            },
+            "security_reviewer_run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "deterministic_tester_run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "final_acceptance_run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reviewer_evidence_hashes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "reviewer_topology_digests": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "gate": {
+              "const": "pass"
+            }
+          }
+        }
+      }
+    },
+    "AuthorizationReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/authorization/v3"
+        },
+        "report_name": {
+          "const": "authorization"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "managed_path_tests",
+            "legacy_path_tests",
+            "plugin_path_tests",
+            "blocked_handler_invocations",
+            "reload_atomicity_tests"
+          ],
+          "properties": {
+            "managed_path_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "legacy_path_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "plugin_path_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "blocked_handler_invocations": {
+              "const": 0
+            },
+            "reload_atomicity_tests": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "TestReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/test/v3"
+        },
+        "report_name": {
+          "const": "test"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unit_tests",
+            "integration_tests",
+            "chaos_tests",
+            "critical_skips"
+          ],
+          "properties": {
+            "unit_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "integration_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "chaos_tests": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "critical_skips": {
+              "const": 0
+            }
+          }
+        }
+      }
+    },
+    "CiReceiptReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/ci-receipt/v3"
+        },
+        "report_name": {
+          "const": "ci-receipt"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workflow_file",
+            "job_name",
+            "job_url",
+            "exact_head",
+            "critical_jobs_executed"
+          ],
+          "properties": {
+            "workflow_file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "job_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "job_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "exact_head": {
+              "const": true
+            },
+            "critical_jobs_executed": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "PromotionPlanV3ReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/promotion-plan-v3/v3"
+        },
+        "report_name": {
+          "const": "promotion-plan-v3"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outer_integration_commit",
+            "outer_integration_tree",
+            "core_integration_commit",
+            "core_integration_tree",
+            "manifest_to_diff_equal",
+            "operator_envelope_sha256",
+            "rollback_preimage_sha256"
+          ],
+          "properties": {
+            "outer_integration_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "core_integration_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "manifest_to_diff_equal": {
+              "const": true
+            },
+            "operator_envelope_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1
+            },
+            "rollback_preimage_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1
+            },
+            "outer_integration_tree": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "core_integration_tree": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        }
+      }
+    },
+    "CanaryReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/canary/v3"
+        },
+        "report_name": {
+          "const": "canary"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "isolated_board",
+            "isolated_capacity_db",
+            "sealed_phase_advances",
+            "duplicate_advances",
+            "restart_injections"
+          ],
+          "properties": {
+            "isolated_board": {
+              "const": true
+            },
+            "isolated_capacity_db": {
+              "const": true
+            },
+            "sealed_phase_advances": {
+              "const": 1
+            },
+            "duplicate_advances": {
+              "const": 0
+            },
+            "restart_injections": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "RollbackReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "outer_integration_commit",
+        "outer_integration_tree",
+        "core_integration_commit",
+        "core_integration_tree",
+        "integration_manifest_sha256",
+        "argv",
+        "cwd",
+        "binary_identities",
+        "home",
+        "hermes_home",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "counts",
+        "negative_ids",
+        "dependencies",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hm-loop-runtime-report/rollback/v3"
+        },
+        "report_name": {
+          "const": "rollback"
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "outer_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "outer_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_integration_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_identities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "mode",
+              "uid",
+              "gid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "mode": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gid": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "hermes_home": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "mode",
+            "fresh",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "const": "0700"
+            },
+            "fresh": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ended_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collected",
+            "executed",
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "executed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "negative_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target_preimage_sha256",
+            "restored_sha256",
+            "unknown_bytes_overwritten",
+            "integrity_checks_passed",
+            "operator_authority_sha256"
+          ],
+          "properties": {
+            "target_preimage_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1
+            },
+            "restored_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1
+            },
+            "unknown_bytes_overwritten": {
+              "const": false
+            },
+            "integrity_checks_passed": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "operator_authority_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "ReportExpectationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_name",
+        "hm_loop_run_id",
+        "phase_id",
+        "attempt_no",
+        "producer_task_id",
+        "producer_task_run_id",
+        "producer_profile",
+        "producer_model",
+        "producer_provider",
+        "reviewer_task_ids",
+        "reviewer_task_run_ids",
+        "reviewer_profiles",
+        "reviewer_models",
+        "reviewer_providers",
+        "evidence_hash",
+        "topology_digest",
+        "artifact_count",
+        "artifact_hashes",
+        "integration_manifest"
+      ],
+      "properties": {
+        "report_name": {
+          "type": "string",
+          "enum": [
+            "migration-preflight",
+            "graph-authority",
+            "outbox-replay",
+            "capacity-routing",
+            "workspace-isolation",
+            "verdict-integrity",
+            "authorization",
+            "test",
+            "ci-receipt",
+            "promotion-plan-v3",
+            "canary",
+            "rollback"
+          ]
+        },
+        "hm_loop_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_task_id": {
+          "type": "string",
+          "pattern": "^t_[0-9a-f]{8}$"
+        },
+        "producer_task_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^t_[0-9a-f]{8}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_task_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reviewer_providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "artifact_count": {
+          "const": 11
+        },
+        "artifact_hashes": {
+          "$ref": "#/$defs/ArtifactHashesR10"
+        },
+        "integration_manifest": {
+          "$ref": "#/$defs/IntegrationManifestV2"
+        }
+      }
+    },
+    "ValidatedRuntimeReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "report_name",
+        "report_sha256",
+        "expectation_sha256",
+        "integration_manifest_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "valid"
+        },
+        "report_name": {
+          "type": "string",
+          "enum": [
+            "migration-preflight",
+            "graph-authority",
+            "outbox-replay",
+            "capacity-routing",
+            "workspace-isolation",
+            "verdict-integrity",
+            "authorization",
+            "test",
+            "ci-receipt",
+            "promotion-plan-v3",
+            "canary",
+            "rollback"
+          ]
+        },
+        "report_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "expectation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "integration_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "x-schema-id": "hm-loop-report-contracts/v3",
+  "x-report-index": [
+    {
+      "report_name": "migration-preflight",
+      "schema_ref": "#/$defs/MigrationPreflightReportV1",
+      "semantic_minimum": [
+        "database_identities",
+        "future_schema_no_write_tests",
+        "crash_boundaries_executed",
+        "logical_hash_unchanged_on_reject"
+      ]
+    },
+    {
+      "report_name": "graph-authority",
+      "schema_ref": "#/$defs/GraphAuthorityReportV1",
+      "semantic_minimum": [
+        "generic_immediate_active_tests",
+        "hm_loop_staged_tests",
+        "activation_conflict_tests",
+        "post_activation_mutation_rejections",
+        "fresh_generation_id_tests"
+      ]
+    },
+    {
+      "report_name": "outbox-replay",
+      "schema_ref": "#/$defs/OutboxReplayReportV1",
+      "semantic_minimum": [
+        "terminal_outbox_atomicity_tests",
+        "overlap_transaction_rejections",
+        "disjoint_recomputations",
+        "exact_replays",
+        "per_event_ack_tests"
+      ]
+    },
+    {
+      "report_name": "capacity-routing",
+      "schema_ref": "#/$defs/CapacityRoutingReportV1",
+      "semantic_minimum": [
+        "board_count",
+        "direct_claim_tests",
+        "review_claim_tests",
+        "configured_max_slots",
+        "max_observed_slots",
+        "board_qualified_cas_tests"
+      ]
+    },
+    {
+      "report_name": "workspace-isolation",
+      "schema_ref": "#/$defs/WorkspaceIsolationReportV1",
+      "semantic_minimum": [
+        "agent_control_plane_host_side",
+        "agent_process_sandboxed",
+        "subprocess_sandbox_tests",
+        "clearenv_tests",
+        "host_secret_read_denials",
+        "task_scope_path_denials",
+        "kanban_lifecycle_tests"
+      ]
+    },
+    {
+      "report_name": "verdict-integrity",
+      "schema_ref": "#/$defs/VerdictIntegrityReportV1",
+      "semantic_minimum": [
+        "reviewer_profiles",
+        "reviewer_models",
+        "provider_families",
+        "same_provider_fallback_disclosed",
+        "alternate_provider_probe_outcome",
+        "deterministic_suite_hashes"
+      ]
+    },
+    {
+      "report_name": "authorization",
+      "schema_ref": "#/$defs/AuthorizationReportV1",
+      "semantic_minimum": [
+        "managed_path_tests",
+        "legacy_path_tests",
+        "plugin_path_tests",
+        "blocked_handler_invocations",
+        "reload_atomicity_tests"
+      ]
+    },
+    {
+      "report_name": "test",
+      "schema_ref": "#/$defs/TestReportV1",
+      "semantic_minimum": [
+        "unit_tests",
+        "integration_tests",
+        "chaos_tests",
+        "critical_skips"
+      ]
+    },
+    {
+      "report_name": "ci-receipt",
+      "schema_ref": "#/$defs/CiReceiptReportV1",
+      "semantic_minimum": [
+        "workflow_file",
+        "job_name",
+        "job_url",
+        "exact_head",
+        "critical_jobs_executed"
+      ]
+    },
+    {
+      "report_name": "promotion-plan-v3",
+      "schema_ref": "#/$defs/PromotionPlanV3ReportV1",
+      "semantic_minimum": [
+        "outer_integration_commit",
+        "core_integration_commit",
+        "manifest_to_diff_equal",
+        "operator_envelope_sha256",
+        "rollback_preimage_sha256"
+      ]
+    },
+    {
+      "report_name": "canary",
+      "schema_ref": "#/$defs/CanaryReportV1",
+      "semantic_minimum": [
+        "isolated_board",
+        "isolated_capacity_db",
+        "sealed_phase_advances",
+        "duplicate_advances",
+        "restart_injections"
+      ]
+    },
+    {
+      "report_name": "rollback",
+      "schema_ref": "#/$defs/RollbackReportV1",
+      "semantic_minimum": [
+        "target_preimage_sha256",
+        "restored_sha256",
+        "unknown_bytes_overwritten",
+        "integrity_checks_passed",
+        "operator_authority_sha256"
+      ]
+    }
+  ],
+  "x-api": {
+    "module": "skills/devtools/hm-loop/scripts/hm_loop_contracts.py",
+    "signature": "validate_runtime_report(report_name: str, payload: Mapping[str, Any], expected: ReportExpectationV1) -> ValidatedRuntimeReportV1",
+    "request_ref": "#/$defs/ReportExpectationV1",
+    "result_ref": "#/$defs/ValidatedRuntimeReportV1",
+    "rules": [
+      "reject duplicate JSON keys before schema validation",
+      "validate IntegrationManifestV2 source receipt, canonical hash, Git ancestry, commit tree and exact binary diff before constructing trusted ReportExpectationV1",
+      "require exact report_name-to-schema mapping and additionalProperties=false",
+      "require payload common authority fields equal ReportExpectationV1 exactly; common authority field names are unchanged from report-schemas-v2",
+      "bind outer/core integration commit/tree and integration_manifest_sha256 to the already-validated IntegrationManifestV2",
+      "for promotion-plan-v3 bind payload outer/core integration commit/tree fields to identical top-level and manifest values",
+      "require artifact_count=11 and artifact_hashes keys exactly the 11 active R10 basenames",
+      "require counts.collected = counts.executed + counts.skipped; counts.executed = counts.passed + counts.failed; counts.failed = 0",
+      "require exit_code = 0 for every command receipt",
+      "capacity-routing requires max_observed_slots <= configured_max_slots",
+      "CI, Desktop, canary and rollback critical gates cannot be skipped",
+      "verdict-integrity requires exact R10 authority IDs/profiles/models/providers and identical evidence/topology values",
+      "same-provider fallback requires distinct reviewer profiles/models plus identical deterministic suite hashes"
+    ]
+  },
+  "x-negative-ids": [
+    "DUPLICATE_JSON_KEY",
+    "UNKNOWN_REPORT",
+    "UNEXPECTED_PROPERTY",
+    "MISSING_REQUIRED",
+    "WRONG_TYPE",
+    "NONZERO_EXIT",
+    "COUNT_ARITHMETIC",
+    "FAILED_TEST",
+    "CRITICAL_SKIP",
+    "STALE_AUTHORITY",
+    "EVIDENCE_HASH_MISMATCH",
+    "TOPOLOGY_DIGEST_MISMATCH",
+    "ARTIFACT_SET_MISMATCH",
+    "INTEGRATION_MANIFEST_MISMATCH",
+    "DYNAMIC_HEAD_MISMATCH",
+    "PROVIDER_FALLBACK_UNDISCLOSED",
+    "REVIEWER_DIVERSITY_MISSING",
+    "INTEGRATION_MANIFEST_HASH_MISMATCH",
+    "INTEGRATION_MANIFEST_SOURCE_MISMATCH",
+    "INTEGRATION_COMMIT_ANCESTRY_MISMATCH",
+    "INTEGRATION_TREE_MISMATCH",
+    "INTEGRATION_DIFF_MISMATCH"
+  ],
+  "x-integration-manifest-v2": {
+    "schema_ref": "#/$defs/IntegrationManifestV2",
+    "canonical_preimage": "compact UTF-8 JSON with recursively sorted object keys, preserved array order, no terminal LF, excluding only top-level manifest_sha256",
+    "validation_order": [
+      "reject duplicate keys and validate IntegrationManifestV2 shape",
+      "load and hash exact source-receipt-r8.json bytes; require source_receipt_schema and source_receipt_sha256 match",
+      "require all four source candidate commit/tree fields equal the loaded receipt",
+      "recompute manifest_sha256 from the canonical preimage excluding manifest_sha256",
+      "for outer and core: git cat-file commit, merge-base --is-ancestor source integration, require integration commit tree equals declared tree, hash exact source..integration binary diff and run diff --check",
+      "only after all source/hash/Git checks construct ReportExpectationV1 and validate report authority"
+    ],
+    "apis": [
+      {
+        "name": "canonicalize_integration_manifest",
+        "signature": "canonicalize_integration_manifest(manifest: IntegrationManifestV2) -> bytes"
+      },
+      {
+        "name": "validate_integration_manifest",
+        "signature": "validate_integration_manifest(manifest: IntegrationManifestV2, source_receipt_path: pathlib.Path, repositories: Mapping[str, pathlib.Path]) -> IntegrationManifestV2"
+      }
+    ],
+    "module": "skills/devtools/hm-loop/scripts/hm_loop_contracts.py"
+  }
+}

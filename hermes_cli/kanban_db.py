@@ -1697,6 +1697,81 @@ CREATE INDEX IF NOT EXISTS idx_managed_authority_graph ON managed_task_authority
 CREATE INDEX IF NOT EXISTS idx_managed_resources_task ON managed_task_resources(task_id, resource_key);
 CREATE INDEX IF NOT EXISTS idx_managed_leases_owner   ON managed_resource_leases(task_id, task_run_id, released_at);
 CREATE INDEX IF NOT EXISTS idx_managed_lease_events_owner ON managed_resource_lease_events(task_id, task_run_id, id);
+
+-- wake-chain DAG tables (cherry-picked from core-native-260825-2027)
+CREATE TABLE IF NOT EXISTS controller_leases (
+    controller_authority TEXT NOT NULL,
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    owner_id TEXT NOT NULL,
+    lease_generation INTEGER NOT NULL,
+    fence TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (controller_authority, root_task_id, topology_generation)
+);
+
+CREATE TABLE IF NOT EXISTS phase_decisions (
+    decision_id TEXT PRIMARY KEY,
+    controller_authority TEXT NOT NULL,
+    hm_loop_run_id TEXT NOT NULL,
+    phase_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    activation_epoch INTEGER NOT NULL,
+    ordered_event_ids TEXT NOT NULL,
+    event_set_sha256 TEXT NOT NULL,
+    policy_sha256 TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    canonical_preimage TEXT NOT NULL,
+    canonical_preimage_sha256 TEXT NOT NULL,
+    controller_lease_generation INTEGER NOT NULL,
+    controller_fence TEXT NOT NULL,
+    state TEXT NOT NULL,
+    decision_code TEXT NOT NULL,
+    decision_sha256 TEXT NOT NULL,
+    sealed_token_id TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_consumptions (
+    consumption_id TEXT PRIMARY KEY,
+    controller_authority TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    decision_id TEXT NOT NULL,
+    decision_sha256 TEXT NOT NULL,
+    policy_sha256 TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    canonical_preimage_sha256 TEXT NOT NULL,
+    controller_lease_generation INTEGER NOT NULL,
+    consumed_at INTEGER NOT NULL,
+    UNIQUE (controller_authority, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS graph_seals (
+    sealed_token_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL UNIQUE,
+    decision_sha256 TEXT NOT NULL,
+    hm_loop_run_id TEXT NOT NULL,
+    phase_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    root_task_id TEXT NOT NULL,
+    topology_generation INTEGER NOT NULL,
+    activation_epoch INTEGER NOT NULL,
+    topology_digest TEXT NOT NULL,
+    terminal_task_ids TEXT NOT NULL,
+    terminal_task_run_ids TEXT NOT NULL,
+    terminal_event_ids TEXT NOT NULL,
+    event_high_watermark INTEGER NOT NULL,
+    board_high_watermark INTEGER NOT NULL,
+    controller_lease_generation INTEGER NOT NULL,
+    controller_fence TEXT NOT NULL,
+    producer_hashes TEXT NOT NULL,
+    report_hashes TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    token_sha256 TEXT NOT NULL
+);
 """
 
 
@@ -16517,3 +16592,139 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+# --- wake-chain DAG helpers + functions (cherry-picked from core-native-260825-2027) ---
+
+_C1_SCHEMA_VERSION = 1
+
+def _canonical_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _validate_c1(contract: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        from hermes_cli.kanban_contracts import ContractValidationError, validate_protocol
+        return dict(validate_protocol(contract, request))
+    except ContractValidationError as exc:
+        raise KanbanProtocolError(exc.error_id, str(exc)) from exc
+
+
+def _require_sha256(value: Any, code: str = "WRONG_TYPE") -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise KanbanProtocolError(code, "expected lowercase SHA-256 hex")
+    return value
+
+def _graph_row(conn: sqlite3.Connection, root_task_id: str, topology_generation: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM kanban_graph_generations WHERE root_task_id = ? AND topology_generation = ?",
+        (root_task_id, int(topology_generation)),
+    ).fetchone()
+
+def acquire_controller_lease(conn: sqlite3.Connection, *, controller_authority: str, root_task_id: str, topology_generation: int, owner_id: str, fence: str, now: int, ttl_seconds: int) -> dict[str, Any]:
+    """Acquire/renew the sole controller lease with a monotonically fenced generation."""
+    if not all(isinstance(value, str) and value for value in (controller_authority, root_task_id, owner_id, fence)) or ttl_seconds < 1:
+        raise KanbanProtocolError("CONTROLLER_LEASE_INVALID", "non-empty identity and positive TTL required")
+    with write_txn(conn):
+        row = conn.execute("SELECT * FROM controller_leases WHERE controller_authority = ? AND root_task_id = ? AND topology_generation = ?", (controller_authority, root_task_id, int(topology_generation))).fetchone()
+        if row is not None and int(row["expires_at"]) > int(now) and (row["owner_id"] != owner_id or row["fence"] != fence):
+            raise KanbanProtocolError("CONTROLLER_LEASE_HELD", "active lease belongs to another controller")
+        generation = (int(row["lease_generation"]) + 1) if row is not None else 1
+        conn.execute("INSERT INTO controller_leases (controller_authority, root_task_id, topology_generation, owner_id, lease_generation, fence, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(controller_authority, root_task_id, topology_generation) DO UPDATE SET owner_id=excluded.owner_id, lease_generation=excluded.lease_generation, fence=excluded.fence, expires_at=excluded.expires_at, updated_at=excluded.updated_at", (controller_authority, root_task_id, int(topology_generation), owner_id, generation, fence, int(now) + int(ttl_seconds), int(now)))
+    return {"controller_authority": controller_authority, "root_task_id": root_task_id, "topology_generation": int(topology_generation), "lease_generation": generation, "fence": fence, "expires_at": int(now) + int(ttl_seconds)}
+
+def _decision_event_set_sha(event_ids: Iterable[int]) -> str:
+    return _canonical_sha256(list(event_ids))
+
+
+def consume_event_batch(conn: sqlite3.Connection, request: Mapping[str, Any]) -> dict[str, Any]:
+    request = _validate_c1("ConsumeEventBatchRequestV1", request)
+    event_ids = list(request["event_ids"])
+    if event_ids != sorted(event_ids):
+        raise KanbanProtocolError("EVENT_ORDER_INVALID", "event IDs must be ordered")
+    canonical = request["canonical_preimage"].encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != request["canonical_preimage_sha256"]:
+        raise KanbanProtocolError("CANONICAL_PREIMAGE_CONFLICT", "canonical preimage hash differs")
+    with write_txn(conn):
+        graph = _graph_row(conn, request["root_task_id"], int(request["topology_generation"]))
+        if graph is None or graph["state"] != "active":
+            raise KanbanProtocolError("CONTROLLER_GRAPH_NOT_ACTIVE", "event consumption requires the active graph generation")
+        lease = conn.execute(
+            "SELECT * FROM controller_leases WHERE controller_authority=? AND root_task_id=? AND topology_generation=?",
+            (request["controller_authority"], request["root_task_id"], request["topology_generation"]),
+        ).fetchone()
+        if (
+            lease is None
+            or int(lease["lease_generation"]) != int(request["controller_lease_generation"])
+            or lease["fence"] != request["controller_fence"]
+            or int(lease["expires_at"]) < int(time.time())
+        ):
+            raise KanbanProtocolError("CONTROLLER_LEASE_CONFLICT", "controller lease/generation/fence is stale")
+        existing_decision = conn.execute("SELECT * FROM phase_decisions WHERE decision_id = ?", (request["decision_id"],)).fetchone()
+        identity_keys = ("decision_sha256", "policy_sha256", "evidence_hash", "canonical_preimage_sha256")
+        if existing_decision is not None:
+            existing_ids = json.loads(existing_decision["ordered_event_ids"])
+            if existing_ids == event_ids and all(existing_decision[key] == request[key] for key in identity_keys):
+                return {"decision_id": request["decision_id"], "decision_sha256": request["decision_sha256"], "canonical_preimage_sha256": request["canonical_preimage_sha256"], "event_set_sha256": existing_decision["event_set_sha256"], "event_ids": event_ids, "replayed": True}
+            raise KanbanProtocolError("DECISION_IDENTITY_CONFLICT", "decision ID has another identity")
+        owned = conn.execute("SELECT event_id, decision_id FROM event_consumptions WHERE controller_authority = ? AND event_id IN (" + ",".join("?" * len(event_ids)) + ")", (request["controller_authority"], *event_ids)).fetchall()
+        conflicts = [int(row["event_id"]) for row in owned if row["decision_id"] != request["decision_id"]]
+        if conflicts:
+            raise KanbanProtocolError("EVENT_BATCH_OVERLAP", "batch overlaps another decision", conflict_ids=conflicts)
+        if len(owned):
+            raise KanbanProtocolError("DECISION_IDENTITY_CONFLICT", "partial same-decision replay is invalid")
+        activation_epoch = int(graph["activation_epoch"] or 1)
+        event_set_sha = _decision_event_set_sha(event_ids)
+        now = int(time.time())
+        conn.execute("INSERT INTO phase_decisions (decision_id, controller_authority, hm_loop_run_id, phase_id, attempt_no, root_task_id, topology_generation, activation_epoch, ordered_event_ids, event_set_sha256, policy_sha256, evidence_hash, canonical_preimage, canonical_preimage_sha256, controller_lease_generation, controller_fence, state, decision_code, decision_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?)", (request["decision_id"], request["controller_authority"], request["hm_loop_run_id"], request["phase_id"], request["attempt_no"], request["root_task_id"], request["topology_generation"], activation_epoch, json.dumps(event_ids, separators=(",", ":")), event_set_sha, request["policy_sha256"], request["evidence_hash"], request["canonical_preimage"], request["canonical_preimage_sha256"], request["controller_lease_generation"], request["controller_fence"], request["decision_code"], request["decision_sha256"], now))
+        for event_id in event_ids:
+            conn.execute("INSERT INTO event_consumptions (consumption_id, controller_authority, event_id, decision_id, decision_sha256, policy_sha256, evidence_hash, canonical_preimage_sha256, controller_lease_generation, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("consume_" + secrets.token_hex(12), request["controller_authority"], event_id, request["decision_id"], request["decision_sha256"], request["policy_sha256"], request["evidence_hash"], request["canonical_preimage_sha256"], request["controller_lease_generation"], now))
+    return {"decision_id": request["decision_id"], "decision_sha256": request["decision_sha256"], "canonical_preimage_sha256": request["canonical_preimage_sha256"], "event_set_sha256": event_set_sha, "event_ids": event_ids, "replayed": False}
+
+def finalize_task_graph(conn: sqlite3.Connection, request: Mapping[str, Any]) -> dict[str, Any]:
+    request = _validate_c1("SealGraphRequestV1", request)
+    with write_txn(conn):
+        existing = conn.execute("SELECT * FROM graph_seals WHERE decision_id = ?", (request["decision_id"],)).fetchone()
+        if existing is not None:
+            if existing["decision_sha256"] != request["decision_sha256"]:
+                raise KanbanProtocolError("SEAL_IDENTITY_CONFLICT", "decision has a different seal")
+            return {key: existing[key] for key in ("sealed_token_id", "hm_loop_run_id", "phase_id", "attempt_no", "root_task_id", "topology_generation", "activation_epoch", "topology_digest", "event_high_watermark", "board_high_watermark", "controller_lease_generation", "controller_fence", "created_at", "token_sha256")} | {"schema_version": 1, "terminal_task_ids": json.loads(existing["terminal_task_ids"]), "terminal_task_run_ids": json.loads(existing["terminal_task_run_ids"]), "terminal_event_ids": json.loads(existing["terminal_event_ids"]), "producer_hashes": json.loads(existing["producer_hashes"]), "report_hashes": json.loads(existing["report_hashes"])}
+        decision = conn.execute("SELECT * FROM phase_decisions WHERE decision_id = ? AND decision_sha256 = ?", (request["decision_id"], request["decision_sha256"])).fetchone()
+        if decision is None:
+            raise KanbanProtocolError("DECISION_NOT_FOUND", "seal requires a consumed decision")
+        graph = _graph_row(conn, request["root_task_id"], int(request["topology_generation"]))
+        if graph is None or graph["state"] != "active" or int(graph["activation_epoch"] or 0) != int(request["activation_epoch"]) or graph["topology_digest"] != request["topology_digest"]:
+            raise KanbanProtocolError("SEAL_GRAPH_CONFLICT", "seal graph is not the current active topology")
+        consumed = {int(row["event_id"]) for row in conn.execute("SELECT event_id FROM event_consumptions WHERE decision_id = ?", (request["decision_id"],))}
+        if set(request["terminal_event_ids"]) != consumed:
+            raise KanbanProtocolError("SEAL_EVENT_COVERAGE_CONFLICT", "seal must cover exactly the decision events")
+        token_id = "seal_" + secrets.token_hex(12)
+        event_hwm = max(request["terminal_event_ids"])
+        board_hwm = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_events").fetchone()[0])
+        token_payload = {"sealed_token_id": token_id, "decision_id": request["decision_id"], "decision_sha256": request["decision_sha256"], "root_task_id": request["root_task_id"], "topology_generation": request["topology_generation"], "activation_epoch": request["activation_epoch"], "topology_digest": request["topology_digest"], "terminal_event_ids": request["terminal_event_ids"], "controller_fence": request["controller_fence"], "created_at": request["now"]}
+        token_sha = _canonical_sha256(token_payload)
+        conn.execute("INSERT INTO graph_seals (sealed_token_id, decision_id, decision_sha256, hm_loop_run_id, phase_id, attempt_no, root_task_id, topology_generation, activation_epoch, topology_digest, terminal_task_ids, terminal_task_run_ids, terminal_event_ids, event_high_watermark, board_high_watermark, controller_lease_generation, controller_fence, producer_hashes, report_hashes, created_at, token_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (token_id, request["decision_id"], request["decision_sha256"], request["hm_loop_run_id"], request["phase_id"], request["attempt_no"], request["root_task_id"], request["topology_generation"], request["activation_epoch"], request["topology_digest"], _json_list(request["terminal_task_ids"]), _json_list(request["terminal_task_run_ids"]), _json_list(request["terminal_event_ids"]), event_hwm, board_hwm, int(decision["controller_lease_generation"]), request["controller_fence"], _json_list(request["producer_hashes"]), _json_list(request["report_hashes"]), request["now"], token_sha))
+        conn.execute("UPDATE phase_decisions SET state = 'sealed', sealed_token_id = ? WHERE decision_id = ? AND state = 'prepared'", (token_id, request["decision_id"]))
+        conn.execute("UPDATE kanban_graph_generations SET state = 'finalized', finalized_at = ?, sealed_token_id = ? WHERE root_task_id = ? AND topology_generation = ? AND state = 'active'", (request["now"], token_id, request["root_task_id"], request["topology_generation"]))
+    return {"sealed_token_id": token_id, "schema_version": 1, "hm_loop_run_id": request["hm_loop_run_id"], "phase_id": request["phase_id"], "attempt_no": request["attempt_no"], "root_task_id": request["root_task_id"], "topology_generation": request["topology_generation"], "activation_epoch": request["activation_epoch"], "topology_digest": request["topology_digest"], "terminal_task_ids": request["terminal_task_ids"], "terminal_task_run_ids": request["terminal_task_run_ids"], "terminal_event_ids": request["terminal_event_ids"], "event_high_watermark": event_hwm, "board_high_watermark": board_hwm, "controller_lease_generation": int(decision["controller_lease_generation"]), "controller_fence": request["controller_fence"], "producer_hashes": request["producer_hashes"], "report_hashes": request["report_hashes"], "created_at": request["now"], "token_sha256": token_sha}
+
+def acknowledge_decision_events(conn: sqlite3.Connection, request: Mapping[str, Any]) -> dict[str, Any]:
+    request = _validate_c1("AckRequestV1", request)
+    with write_txn(conn):
+        seal = conn.execute("SELECT * FROM graph_seals WHERE sealed_token_id = ?", (request["sealed_token_id"],)).fetchone()
+        if seal is None or seal["decision_id"] != request["decision_id"] or seal["decision_sha256"] != request["decision_sha256"] or seal["token_sha256"] != request["sealed_token_sha256"]:
+            raise KanbanProtocolError("ACK_IDENTITY_CONFLICT", "ack does not match the sealed decision")
+        consumed = conn.execute("SELECT * FROM event_consumptions WHERE decision_id = ? AND event_id IN (" + ",".join("?" * len(request["event_ids"])) + ")", (request["decision_id"], *request["event_ids"])).fetchall()
+        if len(consumed) != len(request["event_ids"]):
+            raise KanbanProtocolError("ACK_EVENT_COVERAGE_CONFLICT", "every ack needs a matching consumption")
+        inserted = replayed = 0
+        for consumption in consumed:
+            existing = conn.execute("SELECT * FROM event_acknowledgements WHERE consumption_id = ?", (consumption["consumption_id"],)).fetchone()
+            if existing is not None:
+                if existing["sealed_token_id"] != request["sealed_token_id"]:
+                    raise KanbanProtocolError("ACK_IDENTITY_CONFLICT", "event was acknowledged with another seal")
+                replayed += 1
