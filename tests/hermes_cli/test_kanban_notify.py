@@ -1296,3 +1296,42 @@ def test_outbox_table_migrates_into_a_pre_existing_board(kanban_home):
         ).fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_outbox_materialization_requires_a_subscriber(kanban_home):
+    """An unsubscribed terminal task must not leave an un-ackable wake row.
+
+    ``event_outbox`` rows exist so a subscribed target's wake can be
+    acknowledged. A task nobody subscribed to has no delivery obligation, so
+    materializing a row for it would only accumulate ``pending`` entries that
+    can never be acknowledged.
+    """
+    conn = kb.connect()
+    try:
+        unwatched = str(kb.create_task(conn, title="unwatched", assignee="w"))
+        kb._append_event(conn, unwatched, "completed", {"status": "done"})
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM event_outbox WHERE task_id=?", (unwatched,)
+            ).fetchone()[0]
+            == 0
+        ), "a task with no notify subscription must not materialize wake work"
+
+        watched = str(kb.create_task(conn, title="watched", assignee="w"))
+        kb.add_notify_sub(
+            conn,
+            task_id=watched,
+            platform="telegram",
+            chat_id="c",
+            thread_id="",
+            delivery_mode="notify+required-wake",
+        )
+        kb._append_event(conn, watched, "completed", {"status": "done"})
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM event_outbox WHERE task_id=?", (watched,)
+            ).fetchone()[0]
+            == 1
+        ), "a subscribed terminal task must materialize exactly one wake row"
+    finally:
+        conn.close()

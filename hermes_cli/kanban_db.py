@@ -6063,6 +6063,17 @@ def _outbox_id_for(task_id: str, event_id: int, kind: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _task_has_notify_sub(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when at least one delivery target is subscribed to this task."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM kanban_notify_subs WHERE task_id=? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _ensure_outbox_row(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6072,10 +6083,17 @@ def _ensure_outbox_row(
 ) -> None:
     """Insert one event_outbox row, swallowing the duplicate-key error.
 
+    Only tasks that some target actually subscribed to get a row. A board
+    with no subscribers would otherwise accumulate ``pending`` rows that
+    nobody can ever acknowledge: the table would grow without bound on
+    ordinary Kanban use while carrying no delivery obligation.
+
     The UNIQUE (task_id, event_id) constraint guarantees that a re-emit
     of the same logical event is a no-op; we treat IntegrityError as
     success so the caller never has to pre-check.
     """
+    if not _task_has_notify_sub(conn, task_id):
+        return
     outbox_id = _outbox_id_for(task_id, event_id, kind)
     try:
         conn.execute(
