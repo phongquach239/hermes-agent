@@ -72,7 +72,26 @@ def _file_identity(path: Path) -> dict[str, Any]:
 
 
 def _snapshot(db_path: Path) -> list[dict[str, Any]]:
-    return [_file_identity(candidate) for candidate in (db_path, Path(f"{db_path}-wal"))]
+    """Identity of the files that can carry a write to this board.
+
+    Two sidecars are deliberately excluded because SQLite creates them to
+    coordinate *readers*, so counting them reported a write on every read:
+
+    * ``-shm`` — the shared-memory index. Created the moment any connection
+      attaches to a WAL database, read-only included.
+    * an empty ``-wal`` — a read-only attach creates one at zero length. With
+      no frames in it there is nothing pending to observe.
+
+    What remains is the real signal. A ``-wal`` holding frames is exactly where
+    a concurrent commit lands, and a checkpoint that folds those frames back
+    into the database changes the database digest. Either way a write that
+    races the observation still shows up as a changed identity.
+    """
+    identities = [_file_identity(db_path)]
+    wal = _file_identity(Path(f"{db_path}-wal"))
+    if wal["exists"] and wal["size_bytes"]:
+        identities.append(wal)
+    return identities
 
 
 def _read_count(conn: sqlite3.Connection, table: str) -> int:
