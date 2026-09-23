@@ -1489,3 +1489,130 @@ def test_wake_groups_without_authority_deliver_unmarked(kanban_home):
     assert groups[0]["marker"] is None
     assert groups[0]["text"].startswith("body")
     assert len(groups[0]["claimed"]) == len(claimed)
+
+
+def test_unmarkable_wake_is_delivered_acknowledged_and_reported(
+    kanban_home, caplog,
+):
+    """Consuming an event nobody can act on must not be silent.
+
+    A task outside HM-Loop has no ``task_authority`` row, so no marker can be
+    built and no run can be bound to the wake. The notification is still
+    delivered and its outbox rows are still acknowledged — which does consume
+    the event — so the gateway has to report that rather than dropping it
+    quietly. This drives the deliver/ack path, which the grouping test stops
+    short of.
+    """
+    import logging
+
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+    finally:
+        conn.close()
+    assert claimed, "fixture must claim the terminal event"
+    claimed = [{**row, "board": "default"} for row in claimed]
+
+    from gateway.run import GatewayRunner
+
+    member = _wake_member(claimed[0], 0)
+    # Not deferred: this case is about delivery and acknowledgement, not about
+    # cursor advancement, and a non-deferred member keeps that plumbing out.
+    member["deferred"] = False
+
+    runner = object.__new__(GatewayRunner)
+    groups = runner._kanban_wake_groups([member], ["body"], claimed)
+
+    assert len(groups) == 1
+    assert groups[0]["marker"] is None, "no run resolves here, so no marker"
+    assert groups[0]["unbindable_reason"] == "no_task_authority_for_claimed_events"
+
+    pushed: list[str] = []
+
+    async def _push(text: str) -> None:
+        pushed.append(text)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.kanban_watchers"):
+        asyncio.run(
+            runner._deliver_wake_group(
+                {"push": _push},
+                groups[0],
+                ("telegram", "outbox-chat", None),
+                {},
+                3,
+            )
+        )
+
+    assert pushed, "the notification must still reach the target"
+    assert not pushed[0].startswith("HM_LOOP_WAKE_V1 "), (
+        "a marker must never be invented for events that resolve to no run"
+    )
+    assert any("unmarkable wake" in record.message for record in caplog.records), (
+        "consuming an event nobody can act on must be reported, not silent"
+    )
+
+    conn = kb.connect()
+    try:
+        states = [
+            row[0]
+            for row in conn.execute("SELECT state FROM event_outbox").fetchall()
+        ]
+    finally:
+        conn.close()
+    assert states == ["acknowledged"], (
+        "the row really is consumed — which is exactly why the warning exists"
+    )
+
+
+def test_markable_wake_carries_its_marker_and_is_not_warned_about(
+    kanban_home, caplog,
+):
+    """The managed path must keep emitting a marker and stay quiet."""
+    import logging
+
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _write_task_authority(conn, tid, "run-managed")
+        _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+    finally:
+        conn.close()
+    claimed = [{**row, "board": "default"} for row in claimed]
+
+    from gateway.run import GatewayRunner
+
+    member = _wake_member(claimed[0], 0)
+    member["deferred"] = False
+
+    runner = object.__new__(GatewayRunner)
+    groups = runner._kanban_wake_groups([member], ["body"], claimed)
+
+    assert len(groups) == 1
+    assert groups[0]["marker"], "a managed task must produce a bindable marker"
+    assert groups[0]["unbindable_reason"] is None
+
+    pushed: list[str] = []
+
+    async def _push(text: str) -> None:
+        pushed.append(text)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.kanban_watchers"):
+        asyncio.run(
+            runner._deliver_wake_group(
+                {"push": _push},
+                groups[0],
+                ("telegram", "outbox-chat", None),
+                {},
+                3,
+            )
+        )
+
+    assert pushed and pushed[0].startswith("HM_LOOP_WAKE_V1 ")
+    assert not any("unmarkable wake" in record.message for record in caplog.records)

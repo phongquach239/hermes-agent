@@ -1241,6 +1241,19 @@ class GatewayKanbanWatchersMixin:
         text = group["text"]
         if group["marker"]:
             text = f"{group['marker']}\n{text}"
+        else:
+            # Consuming an event nobody can act on must never be silent. These
+            # rows are about to be acknowledged, so record exactly which ones
+            # and why no run could be bound to the wake.
+            logger.warning(
+                "kanban notifier: delivering an unmarkable wake for target %s "
+                "covering %d event(s) from %s (%s) — the outbox rows will be "
+                "acknowledged with no run able to continue them",
+                target,
+                sum(len(m.get("event_ids") or []) for m in members),
+                [m["task_id"] for m in members],
+                group.get("unbindable_reason") or "no_marker",
+            )
         try:
             await batch["push"](text)
         except Exception as _wk_err:
@@ -1375,6 +1388,15 @@ class GatewayKanbanWatchersMixin:
             body = "\n\n".join(x for x in bucket["texts"] if x)
             body = body or t("gateway.kanban.wake.status_default")
             body += "\n\n" + t("gateway.kanban.wake.guidance")
+            if key is None:
+                # No run resolved for these events, so no marker can be built.
+                # The wake is still delivered as a plain notification, but its
+                # outbox rows will be acknowledged, so say so.
+                reason = "no_task_authority_for_claimed_events"
+            else:
+                reason = None if self._kanban_wake_marker(bucket["claimed"]) else (
+                    "marker_build_returned_none"
+                )
             groups.append(
                 {
                     "run": key,
@@ -1384,6 +1406,7 @@ class GatewayKanbanWatchersMixin:
                     "marker": (
                         self._kanban_wake_marker(bucket["claimed"]) if key else None
                     ),
+                    "unbindable_reason": reason,
                 }
             )
         return groups
