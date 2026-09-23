@@ -1449,6 +1449,28 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Immutable target-affine wake work. Every terminal task event mirrors
+-- into exactly one outbox row so the Gateway can claim the pending work
+-- for a delivery TARGET (platform/chat/thread) as one batch instead of
+-- waking the owner session once per task. Created with IF NOT EXISTS so
+-- legacy boards migrate in place without a separate schema upgrade
+-- step. The UNIQUE (task_id, event_id) index makes the row idempotent
+-- under re-emit. State transitions: pending -> wake_delivered ->
+-- acknowledged; passive (non-wake) delivery uses passive_delivered.
+-- ``acked_at`` stays NULL until acknowledgement covers the row.
+CREATE TABLE IF NOT EXISTS event_outbox (
+    outbox_id     TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    event_id      INTEGER NOT NULL,
+    state         TEXT NOT NULL CHECK (state IN
+                      ('pending','passive_delivered','wake_delivered','acknowledged')),
+    created_at    INTEGER NOT NULL,
+    acked_at      INTEGER,
+    UNIQUE (task_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_state ON event_outbox(state);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -6004,11 +6026,181 @@ def _append_event(
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    # Target-affine wake work: mirror every terminal event into
+    # ``event_outbox`` so the Gateway claims the pending work for a
+    # delivery target as one batch (one model turn per batch) instead of
+    # waking once per subscription. The deterministic ``outbox_id`` plus
+    # the UNIQUE (task_id, event_id) index makes a re-emit of the same
+    # logical event a no-op.
+    if kind in _TERMINAL_EVENT_KINDS:
+        _ensure_outbox_row(conn, task_id, int(cursor.lastrowid), kind, now)
+
+
+# Terminal event kinds that drive a wake to the originating session.
+# Listed once so ``_append_event`` can decide whether to mirror into the
+# outbox without re-importing a hard-coded tuple at every callsite.
+_TERMINAL_EVENT_KINDS = frozenset(
+    {
+        "completed", "blocked", "gave_up", "crashed", "timed_out",
+        "review_requested", "changes_requested", "block_loop_detected",
+    }
+)
+
+
+def _outbox_id_for(task_id: str, event_id: int, kind: str) -> str:
+    """Deterministic outbox row id.
+
+    Collisions on (task_id, event_id) are already blocked by the UNIQUE
+    index in the table definition; the deterministic hash keeps re-emits
+    idempotent even if a caller forgets to pre-check.
+    """
+    payload = f"{task_id}|{event_id}|{kind}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _ensure_outbox_row(
+    conn: sqlite3.Connection,
+    task_id: str,
+    event_id: int,
+    kind: str,
+    created_at: int,
+) -> None:
+    """Insert one event_outbox row, swallowing the duplicate-key error.
+
+    The UNIQUE (task_id, event_id) constraint guarantees that a re-emit
+    of the same logical event is a no-op; we treat IntegrityError as
+    success so the caller never has to pre-check.
+    """
+    outbox_id = _outbox_id_for(task_id, event_id, kind)
+    try:
+        conn.execute(
+            "INSERT INTO event_outbox("
+            "outbox_id,task_id,event_id,state,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (outbox_id, task_id, event_id, "pending", created_at),
+        )
+    except sqlite3.IntegrityError:
+        # Re-emit of the same (task_id, event_id) is the expected
+        # idempotency path; advance nothing.
+        pass
+
+
+def claim_outbox_batch_for_target(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: str = "",
+    task_ids: Optional[Sequence[str]] = None,
+    now: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Claim every ``pending`` outbox row addressed to one delivery target.
+
+    The target is ``(platform, chat_id, thread_id)`` — the same tuple
+    ``kanban_notify_subs`` uses to route a terminal event back to the
+    session that owns the work. Claiming the whole target inside one
+    transaction is what lets the Gateway deliver ONE wake covering the
+    exact consumed event set, instead of one wake (and one model turn)
+    per task.
+
+    ``task_ids`` narrows the claim to the subscriptions the caller has
+    already resolved for this target; ``None`` claims every subscribed
+    task for the target. Rows move ``pending -> wake_delivered`` and each
+    returned dict carries ``previous_state`` so a failed delivery rewinds
+    to real recorded state rather than an invented default.
+
+    Returns one dict per claimed row; an empty list means the target has
+    no pending outbox work.
+    """
+    if not platform or not chat_id:
+        return []
+    ts = int(now if now is not None else time.time())
+    params: list[Any] = [platform, chat_id, thread_id or ""]
+    sql = (
+        "SELECT o.outbox_id, o.task_id, o.event_id, o.state, o.created_at "
+        "FROM event_outbox o "
+        "JOIN kanban_notify_subs s ON s.task_id = o.task_id "
+        "WHERE o.state = 'pending' "
+        "AND s.platform = ? AND s.chat_id = ? "
+        "AND COALESCE(s.thread_id,'') = ?"
+    )
+    if task_ids is not None:
+        ids = [str(t) for t in task_ids]
+        if not ids:
+            return []
+        sql += " AND o.task_id IN (" + ",".join("?" for _ in ids) + ")"
+        params.extend(ids)
+    sql += " ORDER BY o.created_at, o.event_id"
+    rows = conn.execute(sql, params).fetchall()
+    claimed: list[dict[str, Any]] = []
+    for row in rows:
+        updated = conn.execute(
+            "UPDATE event_outbox SET state = 'wake_delivered' "
+            "WHERE outbox_id = ? AND state = 'pending'",
+            (row["outbox_id"],),
+        ).rowcount
+        if not updated:
+            # Another claimer won the row; skip instead of double-delivering.
+            continue
+        claimed.append(
+            {
+                "outbox_id": str(row["outbox_id"]),
+                "task_id": str(row["task_id"]),
+                "event_id": int(row["event_id"]),
+                "previous_state": str(row["state"]),
+                "claimed_at": ts,
+            }
+        )
+    return claimed
+
+
+def acknowledge_outbox_rows(
+    conn: sqlite3.Connection,
+    outbox_ids: Sequence[str],
+    *,
+    now: Optional[int] = None,
+) -> int:
+    """Mark claimed outbox rows acknowledged after successful delivery.
+
+    Only rows in ``wake_delivered``/``passive_delivered`` advance; an
+    already-acknowledged row is left untouched so a replay cannot reset
+    ``acked_at``. Returns the number of rows actually moved.
+    """
+    ids = [str(o) for o in outbox_ids]
+    if not ids:
+        return 0
+    ts = int(now if now is not None else time.time())
+    marks = ",".join("?" for _ in ids)
+    return conn.execute(
+        "UPDATE event_outbox SET state = 'acknowledged', acked_at = ? "
+        f"WHERE outbox_id IN ({marks}) "
+        "AND state IN ('wake_delivered','passive_delivered')",
+        [ts, *ids],
+    ).rowcount
+
+
+def rewind_outbox_rows(conn: sqlite3.Connection, outbox_ids: Sequence[str]) -> int:
+    """Return claimed-but-undelivered rows to ``pending``.
+
+    A wake that failed before delivery must stay claimable, otherwise the
+    event is silently lost. Only rows still in a ``*_delivered`` state are
+    rewound; acknowledged rows are never reopened.
+    """
+    ids = [str(o) for o in outbox_ids]
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    return conn.execute(
+        "UPDATE event_outbox SET state = 'pending' "
+        f"WHERE outbox_id IN ({marks}) "
+        "AND state IN ('wake_delivered','passive_delivered')",
+        ids,
+    ).rowcount
 
 
 def _release_managed_resources_for_current_run(

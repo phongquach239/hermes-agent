@@ -1130,3 +1130,169 @@ def test_gc_archived_rows_already_removed_by_unsub(kanban_home):
         assert kb.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Target-affine wake outbox
+#
+# Every terminal task event mirrors into ``event_outbox`` so the Gateway can
+# claim the pending work for one delivery target as a single batch — one wake
+# and one model turn for the batch — and acknowledge exactly the events that
+# wake covered. These tests pin the invariants the wake contract depends on.
+# ---------------------------------------------------------------------------
+
+def _pending_outbox_rows(conn, task_id):
+    return conn.execute(
+        "SELECT outbox_id, state, acked_at FROM event_outbox WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+
+
+def _make_subscribed_task(kb, conn, *, chat_id="outbox-chat", mode="notify+required-wake"):
+    tid = str(kb.create_task(conn, title="outbox task", assignee="worker"))
+    kb.add_notify_sub(
+        conn,
+        task_id=tid,
+        platform="telegram",
+        chat_id=chat_id,
+        thread_id="",
+        delivery_mode=mode,
+    )
+    return tid
+
+
+def _emit_terminal(kb, conn, task_id, kind="completed"):
+    run_row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    run_id = run_row[0] if run_row else None
+    kb._append_event(conn, task_id, kind, {"summary": "terminal"}, run_id=run_id)
+
+
+def test_outbox_materializes_only_terminal_events(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        kb._append_event(conn, tid, "status", {"status": "running"})
+        assert _pending_outbox_rows(conn, tid) == []
+        _emit_terminal(kb, conn, tid, "completed")
+        rows = _pending_outbox_rows(conn, tid)
+        assert len(rows) == 1
+        assert rows[0]["state"] == "pending"
+        assert rows[0]["acked_at"] is None
+    finally:
+        conn.close()
+
+
+def test_outbox_row_is_idempotent_under_reemit(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _emit_terminal(kb, conn, tid, "completed")
+        event_row = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        kb._ensure_outbox_row(conn, tid, int(event_row["id"]), "completed", 1)
+        assert len(_pending_outbox_rows(conn, tid)) == 1
+    finally:
+        conn.close()
+
+
+def test_outbox_target_batch_claim_covers_every_task_once(kanban_home):
+    conn = kb.connect()
+    try:
+        tids = [_make_subscribed_task(kb, conn) for _ in range(3)]
+        for tid in tids:
+            _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+        # One claim covers the whole target batch: 3 tasks, 3 rows.
+        assert {c["task_id"] for c in claimed} == set(tids)
+        assert all(c["previous_state"] == "pending" for c in claimed)
+        # A second claim in the same tick must not double-deliver.
+        assert kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        ) == []
+        # Another target must never see this work.
+        assert kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="somebody-else",
+        ) == []
+        assert kb.claim_outbox_batch_for_target(
+            conn, platform="discord", chat_id="outbox-chat",
+        ) == []
+    finally:
+        conn.close()
+
+
+def test_outbox_rewind_keeps_event_claimable(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+        assert kb.rewind_outbox_rows(conn, [c["outbox_id"] for c in claimed]) == 1
+        reclaimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+        assert len(reclaimed) == 1, "a failed wake must not lose the event"
+    finally:
+        conn.close()
+
+
+def test_outbox_acknowledge_is_terminal_and_never_reopens(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+        ids = [c["outbox_id"] for c in claimed]
+        assert kb.acknowledge_outbox_rows(conn, ids) == 1
+        row = conn.execute(
+            "SELECT state, acked_at FROM event_outbox WHERE task_id=?", (tid,)
+        ).fetchone()
+        assert row["state"] == "acknowledged"
+        assert row["acked_at"] is not None
+        # A replay must not re-stamp the ack or reopen the row.
+        assert kb.acknowledge_outbox_rows(conn, ids) == 0
+        assert kb.rewind_outbox_rows(conn, ids) == 0
+    finally:
+        conn.close()
+
+
+def test_outbox_table_migrates_into_a_pre_existing_board(kanban_home):
+    """A board written before the outbox existed gains it on reopen."""
+    import sqlite3
+
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        conn.commit()
+    finally:
+        conn.close()
+    db_path = kb.kanban_db_path()
+    assert db_path.exists()
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("DROP TABLE event_outbox")
+    raw.commit()
+    raw.close()
+    # ``_INITIALIZED_PATHS`` is a per-process cache, so clearing it is what a
+    # fresh gateway process sees on the same file.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    conn = kb.connect()
+    try:
+        names = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "event_outbox" in names
+        assert conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE id=?", (tid,)
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
