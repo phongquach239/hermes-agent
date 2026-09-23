@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -1190,6 +1191,29 @@ class GatewayKanbanWatchersMixin:
         text += "\n\n" + t("gateway.kanban.wake.guidance")
         deferred = [m for m in members if m.get("deferred")]
         target = batch.get("target") or ()
+
+        # Claim BEFORE delivering. The HM-Loop plugin only accepts a wake whose
+        # outbox rows already read as delivered, so the claim has to have
+        # happened by the time the marker is validated — and a claim that
+        # cannot be built into a marker is rewound rather than delivered as a
+        # wake nobody can bind.
+        claimed: list[dict] = []
+        try:
+            claimed = await _to_thread_process_service(
+                self._kanban_claim_wake_batch, members,
+            )
+        except Exception as _claim_err:
+            logger.warning(
+                "kanban notifier: outbox claim failed for target %s covering "
+                "%s: %s",
+                target, [m["task_id"] for m in members], _claim_err,
+                exc_info=True,
+            )
+        marker = await _to_thread_process_service(
+            self._kanban_wake_marker, members, claimed,
+        )
+        if marker:
+            text = f"{marker}\n{text}"
         try:
             await batch["push"](text)
         except Exception as _wk_err:
@@ -1238,6 +1262,15 @@ class GatewayKanbanWatchersMixin:
                     target, [m["task_id"] for m in members], _wk_err,
                     exc_info=True,
                 )
+            if claimed:
+                rewound = await _to_thread_process_service(
+                    self._kanban_rewind_wake_batch, claimed,
+                )
+                logger.info(
+                    "kanban notifier: rewound %d claimed outbox row(s) after a "
+                    "failed wake for target %s — the next tick retries them",
+                    rewound, target,
+                )
             return
 
         for m in members:
@@ -1247,7 +1280,7 @@ class GatewayKanbanWatchersMixin:
                 self._kanban_advance, m["sub"], m["cursor"], m["board"],
             )
         acked = await _to_thread_process_service(
-            self._kanban_ack_wake_batch, members,
+            self._kanban_finish_wake_batch, claimed,
         )
         logger.info(
             "kanban notifier: woke agent once for target %s covering %d "
@@ -1256,28 +1289,33 @@ class GatewayKanbanWatchersMixin:
             sum(len(m.get("event_ids") or []) for m in members), acked,
         )
 
-    def _kanban_ack_wake_batch(self, members: list) -> int:
-        """Acknowledge exactly the outbox events this wake consumed.
+    def _kanban_claim_wake_batch(self, members: list) -> list:
+        """Claim the outbox rows this wake is about to consume.
 
         Runs in ``to_thread``. Claiming is scoped to the member tasks and the
-        acknowledgement is then filtered to the exact ``(task_id, event_id)``
-        pairs carried in the wake: a row claimed but not covered by this wake
-        is returned to ``pending`` rather than acknowledged, so coverage can
-        never overstate what was delivered.
+        claim is then filtered to the exact ``(task_id, event_id)`` pairs the
+        wake carries: a row claimed but not covered by this wake is returned to
+        ``pending`` immediately rather than acknowledged, so coverage can never
+        overstate what was delivered.
+
+        Rows move ``pending -> wake_delivered`` here, before the wake is sent.
+        That ordering is what lets the delivered message carry a marker the
+        HM-Loop plugin can validate — the plugin refuses a wake whose outbox
+        rows still read as pending.
         """
         from hermes_cli import kanban_db as _kb
 
         by_target: dict[tuple, list] = {}
         for m in members:
             by_target.setdefault((m["board"], m.get("target") or ()), []).append(m)
-        acked = 0
+        claimed: list[dict] = []
         for (board, target), group in by_target.items():
             if len(target) != 3:
                 continue
             platform, chat_id, thread_id = target
             conn = _kb.connect(board=board)
             try:
-                claimed = _kb.claim_outbox_batch_for_target(
+                rows = _kb.claim_outbox_batch_for_target(
                     conn,
                     platform=platform,
                     chat_id=chat_id,
@@ -1289,29 +1327,151 @@ class GatewayKanbanWatchersMixin:
                     for m in group
                     for eid in (m.get("event_ids") or [])
                 }
-                covered = [
-                    c["outbox_id"]
-                    for c in claimed
-                    if (c["task_id"], c["event_id"]) in exact
-                ]
-                uncovered = [
-                    c["outbox_id"]
-                    for c in claimed
-                    if (c["task_id"], c["event_id"]) not in exact
-                ]
-                if covered:
-                    acked += _kb.acknowledge_outbox_rows(conn, covered)
-                if uncovered:
-                    _kb.rewind_outbox_rows(conn, uncovered)
+                for c in rows:
+                    if (c["task_id"], c["event_id"]) in exact:
+                        claimed.append({**c, "board": board})
+                    else:
+                        _kb.rewind_outbox_rows(conn, [c["outbox_id"]])
+                conn.commit()
+            except Exception as _claim_err:
+                logger.warning(
+                    "kanban notifier: outbox claim failed for %s: %s",
+                    target, _claim_err, exc_info=True,
+                )
+            finally:
+                conn.close()
+        return claimed
+
+    def _kanban_wake_marker(self, members: list, claimed: list) -> Optional[str]:
+        """Build the ``HM_LOOP_WAKE_V1`` line that authorizes this wake turn.
+
+        The marker is a pointer, not a grant. The HM-Loop plugin re-reads the
+        board and re-checks every field against ``task_authority`` /
+        ``task_events`` / ``event_outbox`` before it will bind the turn to a
+        run, so the marker has to be built from those same rows. Without it the
+        plugin cannot resolve the wake turn at all: the run is stored against
+        the original turn id, and nothing else names the new one.
+
+        A batch covering more than one run emits no marker. One wake turn must
+        not stand in for another run's work, so that case is left unmarked and
+        logged rather than attributed to whichever run happened to be first.
+        """
+        from hermes_cli import kanban_db as _kb
+
+        if not claimed:
+            return None
+        try:
+            rows = []
+            by_board: dict[str, list] = {}
+            for row in claimed:
+                by_board.setdefault(row["board"], []).append(row)
+            for board, board_rows in by_board.items():
+                conn = _kb.connect(board=board)
+                try:
+                    for row in board_rows:
+                        authority = conn.execute(
+                            "SELECT lineage_root_session_id,turn_id,hm_loop_run_id,"
+                            "phase_id,attempt_no,root_task_id,topology_generation,"
+                            "authority_sha256 FROM task_authority WHERE task_id=?",
+                            (row["task_id"],),
+                        ).fetchone()
+                        if authority is None:
+                            logger.info(
+                                "kanban notifier: no task_authority for %s on %s — "
+                                "wake delivered without a bindable marker",
+                                row["task_id"], board,
+                            )
+                            return None
+                        rows.append((board, row, authority))
+                finally:
+                    conn.close()
+        except Exception as _marker_err:
+            logger.warning(
+                "kanban notifier: wake marker build failed: %s",
+                _marker_err, exc_info=True,
+            )
+            return None
+
+        runs = {
+            (board, authority["hm_loop_run_id"], authority["lineage_root_session_id"])
+            for board, _row, authority in rows
+        }
+        if len(runs) != 1:
+            logger.warning(
+                "kanban notifier: wake for target covers %d runs %s; delivering "
+                "without a marker because one wake turn must not stand in for "
+                "another run's work",
+                len(runs), sorted(str(run) for run in runs),
+            )
+            return None
+
+        board, row, authority = rows[0]
+        marker = {
+            "schema": "hm-loop-wake/v1",
+            "board": board,
+            "outbox_id": row["outbox_id"],
+            "event_id": int(row["event_id"]),
+            "task_id": row["task_id"],
+            "lineage_root_session_id": authority["lineage_root_session_id"],
+            "turn_id": authority["turn_id"],
+            "run_id": authority["hm_loop_run_id"],
+            "phase_id": authority["phase_id"],
+            "attempt_no": int(authority["attempt_no"]),
+            "root_task_id": authority["root_task_id"],
+            "topology_generation": int(authority["topology_generation"]),
+            "authority_sha256": authority["authority_sha256"],
+        }
+        return "HM_LOOP_WAKE_V1 " + json.dumps(
+            marker, separators=(",", ":"), sort_keys=True,
+        )
+
+    def _kanban_finish_wake_batch(self, claimed: list) -> int:
+        """Acknowledge the rows a delivered wake actually consumed."""
+        from hermes_cli import kanban_db as _kb
+
+        if not claimed:
+            return 0
+        by_board: dict[str, list] = {}
+        for row in claimed:
+            by_board.setdefault(row["board"], []).append(row["outbox_id"])
+        acked = 0
+        for board, outbox_ids in by_board.items():
+            conn = _kb.connect(board=board)
+            try:
+                acked += _kb.acknowledge_outbox_rows(conn, outbox_ids)
                 conn.commit()
             except Exception as _ack_err:
                 logger.warning(
                     "kanban notifier: outbox acknowledgement failed for %s: %s",
-                    target, _ack_err, exc_info=True,
+                    board, _ack_err, exc_info=True,
                 )
             finally:
                 conn.close()
         return acked
+
+    def _kanban_rewind_wake_batch(self, claimed: list) -> int:
+        """Return claimed rows to ``pending`` so a failed wake is retried."""
+        from hermes_cli import kanban_db as _kb
+
+        if not claimed:
+            return 0
+        by_board: dict[str, list] = {}
+        for row in claimed:
+            by_board.setdefault(row["board"], []).append(row["outbox_id"])
+        rewound = 0
+        for board, outbox_ids in by_board.items():
+            conn = _kb.connect(board=board)
+            try:
+                rewound += _kb.rewind_outbox_rows(conn, outbox_ids)
+                conn.commit()
+            except Exception as _rewind_err:
+                logger.warning(
+                    "kanban notifier: outbox rewind failed for %s: %s",
+                    board, _rewind_err, exc_info=True,
+                )
+            finally:
+                conn.close()
+        return rewound
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,
