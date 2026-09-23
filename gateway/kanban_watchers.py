@@ -514,6 +514,15 @@ class GatewayKanbanWatchersMixin:
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
+                # Per-tick batched-wake plan, keyed by delivery target. The
+                # HM-Loop wake contract is target-affine: a batch of terminal
+                # events addressed to the same (platform, chat_id, thread_id)
+                # must produce ONE model turn, with acknowledgement covering
+                # exactly the events that wake consumed. One wake per
+                # subscription made an N-task phase cost N model turns, and
+                # every wake after the first then found the work already
+                # claimed.
+                wake_batch: dict[tuple, dict] = {}
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -857,6 +866,9 @@ class GatewayKanbanWatchersMixin:
                         _is_push_adapter = _adapter_push_ok(adapter)
                         _session_key = ""
                         _synth = ""
+                        _synth_body = ""
+                        _defer_advance = False
+                        _wake_target: tuple = ()
                         if _wake_kinds:
                             if _is_push_adapter:
                                 _session_key = getattr(task, "session_id", None) or ""
@@ -910,6 +922,15 @@ class GatewayKanbanWatchersMixin:
                                     "gateway.kanban.wake.review_detail",
                                     reason=wake_review_detail,
                                 )
+                            # Wake batch member body: the guidance line is
+                            # appended ONCE per delivered batch, not once per
+                            # task, so the coalesced turn stays readable.
+                            _synth_body = _synth
+                            _wake_target = (
+                                platform_str,
+                                str(sub["chat_id"]),
+                                str(sub.get("thread_id") or ""),
+                            )
                             _synth += "\n\n" + t(
                                 "gateway.kanban.wake.guidance"
                             )
@@ -960,7 +981,7 @@ class GatewayKanbanWatchersMixin:
                                     )
                                 continue
 
-                        async def _push_wake() -> None:
+                        async def _push_wake(_text: str = "") -> None:
                             """Wake the creator session behind a push adapter.
 
                             Shared by the wake-only (pre-advance, delivery)
@@ -1009,7 +1030,7 @@ class GatewayKanbanWatchersMixin:
                             # cursor advance above).
                             await deliver_wake(
                                 adapter,
-                                text=_synth,
+                                text=_text or _synth,
                                 session_id=_session_key,
                                 source=_source,
                             )
@@ -1024,51 +1045,51 @@ class GatewayKanbanWatchersMixin:
                             and _wake_kinds
                         ):
                             # Wake-only and notify+required-wake subscriptions
-                            # treat the native wake as part of delivery. It
-                            # must succeed BEFORE the cursor advances. Plain
-                            # notify+wake remains best-effort after its passive
-                            # message has been acknowledged.
-                            try:
-                                await _push_wake()
-                                sub_fail_counts.pop(sub_key, None)
-                            except Exception as _wk_err:
-                                fails = sub_fail_counts.get(sub_key, 0) + 1
-                                sub_fail_counts[sub_key] = fails
-                                logger.warning(
-                                    "kanban notifier: required wake delivery failed "
-                                    "for %s (attempt %d/%d): %s",
-                                    sub["task_id"], fails,
-                                    MAX_SEND_FAILURES, _wk_err, exc_info=True,
-                                )
-                                if fails >= MAX_SEND_FAILURES:
-                                    logger.warning(
-                                        "kanban notifier: dropping subscription "
-                                        "%s on %s after %d consecutive wake failures",
-                                        sub["task_id"], platform_str, fails,
-                                    )
-                                    await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
-                                    sub_fail_counts.pop(sub_key, None)
-                                else:
-                                    # Rewind the pre-send claim so the next
-                                    # tick retries the wake — the event is
-                                    # NOT lost.
-                                    await _to_thread_process_service(
-                                        self._kanban_rewind,
-                                        sub,
-                                        d["cursor"],
-                                        d.get("old_cursor", 0),
-                                        board_slug,
-                                    )
-                                continue
+                            # treat the native wake as part of delivery: it
+                            # must succeed BEFORE the cursor advances. The wake
+                            # is deferred to the per-target batch flush so a
+                            # phase that completes N tasks costs ONE model turn
+                            # instead of N, and the cursor is advanced there
+                            # only after that single wake succeeds.
+                            _batch = wake_batch.get(_wake_target)
+                            if _batch is None:
+                                _batch = {
+                                    "target": _wake_target,
+                                    "board": board_slug,
+                                    "push": _push_wake,
+                                    "parts": [],
+                                    "members": [],
+                                }
+                                wake_batch[_wake_target] = _batch
+                            _batch["parts"].append(_synth_body or _synth)
+                            _batch["members"].append(
+                                {
+                                    "sub": sub,
+                                    "board": board_slug,
+                                    "cursor": d["cursor"],
+                                    "old_cursor": d.get("old_cursor", 0),
+                                    "sub_key": sub_key,
+                                    "task_id": sub["task_id"],
+                                    "target": _wake_target,
+                                    "event_ids": [
+                                        int(ev.id)
+                                        for ev in d["events"]
+                                        if ev.kind in _WAKE_KINDS
+                                    ],
+                                    "deferred": True,
+                                }
+                            )
+                            _defer_advance = True
 
                         # Delivery complete (text ping for push adapters, wake
                         # self-post for non-push, wake injection for wake-only
                         # push subs): advance cursor. The cursor is the dedup
                         # mechanism — it prevents re-delivery of the same
                         # event on subsequent ticks.
-                        await _to_thread_process_service(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
-                        )
+                        if not _defer_advance:
+                            await _to_thread_process_service(
+                                self._kanban_advance, sub, d["cursor"], board_slug,
+                            )
                         if not _is_push_adapter:
                             # Nothing left to deliver on this path (the wake,
                             # if any, already succeeded above).
@@ -1086,24 +1107,52 @@ class GatewayKanbanWatchersMixin:
                         ):
                             # notify+wake: the text ping above was the
                             # delivery and the cursor has advanced; the wake
-                            # injection stays best-effort.
-                            try:
-                                await _push_wake()
-                            except Exception as _wk_err:
-                                # Best-effort: the notification itself already
-                                # delivered and the cursor has advanced, so a
-                                # broken wake path must not wedge the tick — but
-                                # log at WARNING with a traceback rather than
-                                # DEBUG so a persistently-failing wake is visible
-                                # in normal logs instead of silently no-op'ing.
-                                logger.warning(
-                                    "kanban notifier: wakeup injection failed for %s: %s",
-                                    sub["task_id"], _wk_err, exc_info=True,
-                                )
+                            # injection stays best-effort. It still joins the
+                            # per-target batch so the target gets ONE model
+                            # turn, but its failure must not rewind a cursor
+                            # that already advanced.
+                            _batch = wake_batch.get(_wake_target)
+                            if _batch is None:
+                                _batch = {
+                                    "target": _wake_target,
+                                    "board": board_slug,
+                                    "push": _push_wake,
+                                    "parts": [],
+                                    "members": [],
+                                }
+                                wake_batch[_wake_target] = _batch
+                            _batch["parts"].append(_synth_body or _synth)
+                            _batch["members"].append(
+                                {
+                                    "sub": sub,
+                                    "board": board_slug,
+                                    "cursor": d["cursor"],
+                                    "old_cursor": d.get("old_cursor", 0),
+                                    "sub_key": sub_key,
+                                    "task_id": sub["task_id"],
+                                    "target": _wake_target,
+                                    "event_ids": [
+                                        int(ev.id)
+                                        for ev in d["events"]
+                                        if ev.kind in _WAKE_KINDS
+                                    ],
+                                    "deferred": False,
+                                }
+                            )
                         if task_terminal:
                             await _to_thread_process_service(
                                 self._kanban_unsub, sub, board_slug,
                             )
+
+                # One wake per delivery target for this tick. Each batch is
+                # delivered once, acknowledged as a unit, and only then are
+                # the deferred member cursors advanced — so a replay can never
+                # duplicate the model turn and a failure can never lose an
+                # event.
+                for _batch in wake_batch.values():
+                    await self._deliver_kanban_wake_batch(
+                        _batch, sub_fail_counts, MAX_SEND_FAILURES,
+                    )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.
@@ -1111,6 +1160,158 @@ class GatewayKanbanWatchersMixin:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _deliver_kanban_wake_batch(
+        self,
+        batch: dict,
+        sub_fail_counts: dict,
+        max_failures: int,
+    ) -> None:
+        """Deliver ONE wake covering every terminal event headed for a target.
+
+        The wake contract is target-affine: a batch of terminal events
+        addressed to the same ``(platform, chat_id, thread_id)`` produces ONE
+        model turn, and acknowledgement covers exactly the events that wake
+        consumed. Delivering once per subscription instead made an N-task
+        phase cost N model turns; every wake after the first then found the
+        work already claimed, so it looked like a delivery failure and its
+        subscription was rewound and replayed.
+
+        On success the deferred member cursors advance and the consumed
+        outbox events are acknowledged. On failure each member's failure
+        counter is bumped and the deferred cursors are rewound so the next
+        tick retries the batch — no event is lost and no turn is duplicated.
+        """
+        members = batch.get("members") or []
+        if not members:
+            return
+        parts = [p for p in batch.get("parts", []) if p]
+        text = "\n\n".join(parts) or t("gateway.kanban.wake.status_default")
+        text += "\n\n" + t("gateway.kanban.wake.guidance")
+        deferred = [m for m in members if m.get("deferred")]
+        target = batch.get("target") or ()
+        try:
+            await batch["push"](text)
+        except Exception as _wk_err:
+            # Only members whose wake is PART of delivery (wake-only /
+            # notify+required-wake) may bump the send-failure counter or be
+            # rewound. A best-effort notify+wake member already delivered its
+            # text ping and advanced its cursor, so a broken wake injection
+            # must not wedge the subscription or replay the notification.
+            for m in deferred:
+                fails = sub_fail_counts.get(m["sub_key"], 0) + 1
+                sub_fail_counts[m["sub_key"]] = fails
+                if fails >= max_failures:
+                    logger.warning(
+                        "kanban notifier: dropping subscription %s on %s after "
+                        "%d consecutive wake failures",
+                        m["task_id"], m["target"][0] if m.get("target") else "?",
+                        fails,
+                    )
+                    await _to_thread_process_service(
+                        self._kanban_unsub, m["sub"], m["board"],
+                    )
+                    sub_fail_counts.pop(m["sub_key"], None)
+                    continue
+                # Rewind the pre-send claim so the next tick retries the
+                # batch — the event is NOT lost.
+                await _to_thread_process_service(
+                    self._kanban_rewind,
+                    m["sub"],
+                    m["cursor"],
+                    m["old_cursor"],
+                    m["board"],
+                )
+            if deferred:
+                logger.warning(
+                    "kanban notifier: batched wake delivery failed for target "
+                    "%s covering %d event(s) from %s (attempt %d/%d): %s",
+                    target, sum(len(m.get("event_ids") or []) for m in members),
+                    [m["task_id"] for m in members],
+                    max(sub_fail_counts.get(m["sub_key"], 1) for m in deferred),
+                    max_failures, _wk_err, exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "kanban notifier: wakeup injection failed for target %s "
+                    "covering %s: %s",
+                    target, [m["task_id"] for m in members], _wk_err,
+                    exc_info=True,
+                )
+            return
+
+        for m in members:
+            sub_fail_counts.pop(m["sub_key"], None)
+        for m in deferred:
+            await _to_thread_process_service(
+                self._kanban_advance, m["sub"], m["cursor"], m["board"],
+            )
+        acked = await _to_thread_process_service(
+            self._kanban_ack_wake_batch, members,
+        )
+        logger.info(
+            "kanban notifier: woke agent once for target %s covering %d "
+            "task(s) %s (%d event(s), %d outbox row(s) acknowledged)",
+            target, len(members), [m["task_id"] for m in members],
+            sum(len(m.get("event_ids") or []) for m in members), acked,
+        )
+
+    def _kanban_ack_wake_batch(self, members: list) -> int:
+        """Acknowledge exactly the outbox events this wake consumed.
+
+        Runs in ``to_thread``. Claiming is scoped to the member tasks and the
+        acknowledgement is then filtered to the exact ``(task_id, event_id)``
+        pairs carried in the wake: a row claimed but not covered by this wake
+        is returned to ``pending`` rather than acknowledged, so coverage can
+        never overstate what was delivered.
+        """
+        from hermes_cli import kanban_db as _kb
+
+        by_target: dict[tuple, list] = {}
+        for m in members:
+            by_target.setdefault((m["board"], m.get("target") or ()), []).append(m)
+        acked = 0
+        for (board, target), group in by_target.items():
+            if len(target) != 3:
+                continue
+            platform, chat_id, thread_id = target
+            conn = _kb.connect(board=board)
+            try:
+                claimed = _kb.claim_outbox_batch_for_target(
+                    conn,
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    task_ids=[m["task_id"] for m in group],
+                )
+                exact = {
+                    (m["task_id"], int(eid))
+                    for m in group
+                    for eid in (m.get("event_ids") or [])
+                }
+                covered = [
+                    c["outbox_id"]
+                    for c in claimed
+                    if (c["task_id"], c["event_id"]) in exact
+                ]
+                uncovered = [
+                    c["outbox_id"]
+                    for c in claimed
+                    if (c["task_id"], c["event_id"]) not in exact
+                ]
+                if covered:
+                    acked += _kb.acknowledge_outbox_rows(conn, covered)
+                if uncovered:
+                    _kb.rewind_outbox_rows(conn, uncovered)
+                conn.commit()
+            except Exception as _ack_err:
+                logger.warning(
+                    "kanban notifier: outbox acknowledgement failed for %s: %s",
+                    target, _ack_err, exc_info=True,
+                )
+            finally:
+                conn.close()
+        return acked
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,
