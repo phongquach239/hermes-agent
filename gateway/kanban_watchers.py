@@ -1187,9 +1187,6 @@ class GatewayKanbanWatchersMixin:
         if not members:
             return
         parts = [p for p in batch.get("parts", []) if p]
-        text = "\n\n".join(parts) or t("gateway.kanban.wake.status_default")
-        text += "\n\n" + t("gateway.kanban.wake.guidance")
-        deferred = [m for m in members if m.get("deferred")]
         target = batch.get("target") or ()
 
         # Claim BEFORE delivering. The HM-Loop plugin only accepts a wake whose
@@ -1209,11 +1206,41 @@ class GatewayKanbanWatchersMixin:
                 target, [m["task_id"] for m in members], _claim_err,
                 exc_info=True,
             )
-        marker = await _to_thread_process_service(
-            self._kanban_wake_marker, members, claimed,
+
+        # One wake per run. A target is a chat destination, but a run is what a
+        # wake turn binds to: the plugin resolves exactly one run per turn. A
+        # merged wake would therefore consume one run's events — they are
+        # claimed and acknowledged here — while giving that run nothing to
+        # continue it.
+        groups = await _to_thread_process_service(
+            self._kanban_wake_groups, members, parts, claimed,
         )
-        if marker:
-            text = f"{marker}\n{text}"
+        for group in groups:
+            await self._deliver_wake_group(
+                batch, group, target, sub_fail_counts, max_failures,
+            )
+
+    async def _deliver_wake_group(
+        self,
+        batch: dict,
+        group: dict,
+        target: tuple,
+        sub_fail_counts: dict,
+        max_failures: int,
+    ) -> None:
+        """Send one wake for one run, then settle only that run's claim.
+
+        Each group owns exactly the members, text, claim and marker that
+        resolve to its run, so a failure in one run never rewinds another
+        run's rows or advances another run's cursors.
+        """
+        members = group["members"]
+        if not members:
+            return
+        deferred = [m for m in members if m.get("deferred")]
+        text = group["text"]
+        if group["marker"]:
+            text = f"{group['marker']}\n{text}"
         try:
             await batch["push"](text)
         except Exception as _wk_err:
@@ -1262,9 +1289,9 @@ class GatewayKanbanWatchersMixin:
                     target, [m["task_id"] for m in members], _wk_err,
                     exc_info=True,
                 )
-            if claimed:
+            if group["claimed"]:
                 rewound = await _to_thread_process_service(
-                    self._kanban_rewind_wake_batch, claimed,
+                    self._kanban_rewind_wake_batch, group["claimed"],
                 )
                 logger.info(
                     "kanban notifier: rewound %d claimed outbox row(s) after a "
@@ -1280,7 +1307,7 @@ class GatewayKanbanWatchersMixin:
                 self._kanban_advance, m["sub"], m["cursor"], m["board"],
             )
         acked = await _to_thread_process_service(
-            self._kanban_finish_wake_batch, claimed,
+            self._kanban_finish_wake_batch, group["claimed"],
         )
         logger.info(
             "kanban notifier: woke agent once for target %s covering %d "
@@ -1289,6 +1316,77 @@ class GatewayKanbanWatchersMixin:
             sum(len(m.get("event_ids") or []) for m in members), acked,
         )
 
+    def _kanban_wake_groups(
+        self, members: list, parts: list, claimed: list,
+    ) -> list:
+        """Split a target-affine batch into one wake group per run.
+
+        Members are separated by the run their claimed events belong to, and
+        each group carries its own text, its own slice of the claim and its own
+        marker. Members whose run cannot be resolved — no ``task_authority``
+        row for the task — collect into a single unmarked group, which is the
+        pre-existing behaviour for boards that never established authority.
+        """
+        from hermes_cli import kanban_db as _kb
+
+        run_of_task: dict[tuple, tuple] = {}
+        if claimed:
+            by_board: dict[str, list] = {}
+            for row in claimed:
+                by_board.setdefault(row["board"], []).append(row)
+            for board, rows in by_board.items():
+                conn = _kb.connect(board=board)
+                try:
+                    for row in rows:
+                        key = (board, row["task_id"])
+                        if key in run_of_task:
+                            continue
+                        authority = conn.execute(
+                            "SELECT hm_loop_run_id,lineage_root_session_id "
+                            "FROM task_authority WHERE task_id=?",
+                            (row["task_id"],),
+                        ).fetchone()
+                        if authority is not None:
+                            run_of_task[key] = (
+                                board,
+                                authority["hm_loop_run_id"],
+                                authority["lineage_root_session_id"],
+                            )
+                finally:
+                    conn.close()
+
+        buckets: dict = {}
+        for index, member in enumerate(members):
+            key = run_of_task.get((member["board"], member["task_id"]))
+            bucket = buckets.setdefault(
+                key,
+                {"members": [], "texts": [], "claimed": []},
+            )
+            bucket["members"].append(member)
+            bucket["texts"].append(parts[index] if index < len(parts) else "")
+
+        for row in claimed:
+            key = run_of_task.get((row["board"], row["task_id"]))
+            if key in buckets:
+                buckets[key]["claimed"].append(row)
+
+        groups = []
+        for key, bucket in buckets.items():
+            body = "\n\n".join(x for x in bucket["texts"] if x)
+            body = body or t("gateway.kanban.wake.status_default")
+            body += "\n\n" + t("gateway.kanban.wake.guidance")
+            groups.append(
+                {
+                    "run": key,
+                    "members": bucket["members"],
+                    "claimed": bucket["claimed"],
+                    "text": body,
+                    "marker": (
+                        self._kanban_wake_marker(bucket["claimed"]) if key else None
+                    ),
+                }
+            )
+        return groups
     def _kanban_claim_wake_batch(self, members: list) -> list:
         """Claim the outbox rows this wake is about to consume.
 
@@ -1342,7 +1440,7 @@ class GatewayKanbanWatchersMixin:
                 conn.close()
         return claimed
 
-    def _kanban_wake_marker(self, members: list, claimed: list) -> Optional[str]:
+    def _kanban_wake_marker(self, claimed: list) -> Optional[str]:
         """Build the ``HM_LOOP_WAKE_V1`` line that authorizes this wake turn.
 
         The marker is a pointer, not a grant. The HM-Loop plugin re-reads the
@@ -1352,19 +1450,20 @@ class GatewayKanbanWatchersMixin:
         plugin cannot resolve the wake turn at all: the run is stored against
         the original turn id, and nothing else names the new one.
 
-        A batch covering more than one run emits no marker. One wake turn must
-        not stand in for another run's work, so that case is left unmarked and
-        logged rather than attributed to whichever run happened to be first.
+        The caller has already split the batch by run, so every row here
+        belongs to the same run. Rows that disagree, or a task with no
+        ``task_authority`` row, yield no marker rather than a marker for
+        whichever run happened to come first.
         """
         from hermes_cli import kanban_db as _kb
 
         if not claimed:
             return None
         try:
-            rows = []
             by_board: dict[str, list] = {}
             for row in claimed:
                 by_board.setdefault(row["board"], []).append(row)
+            resolved = []
             for board, board_rows in by_board.items():
                 conn = _kb.connect(board=board)
                 try:
@@ -1382,7 +1481,7 @@ class GatewayKanbanWatchersMixin:
                                 row["task_id"], board,
                             )
                             return None
-                        rows.append((board, row, authority))
+                        resolved.append((board, row, authority))
                 finally:
                     conn.close()
         except Exception as _marker_err:
@@ -1392,20 +1491,7 @@ class GatewayKanbanWatchersMixin:
             )
             return None
 
-        runs = {
-            (board, authority["hm_loop_run_id"], authority["lineage_root_session_id"])
-            for board, _row, authority in rows
-        }
-        if len(runs) != 1:
-            logger.warning(
-                "kanban notifier: wake for target covers %d runs %s; delivering "
-                "without a marker because one wake turn must not stand in for "
-                "another run's work",
-                len(runs), sorted(str(run) for run in runs),
-            )
-            return None
-
-        board, row, authority = rows[0]
+        board, row, authority = resolved[0]
         marker = {
             "schema": "hm-loop-wake/v1",
             "board": board,

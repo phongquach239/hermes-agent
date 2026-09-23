@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -1335,3 +1336,156 @@ def test_outbox_materialization_requires_a_subscriber(kanban_home):
         ), "a subscribed terminal task must materialize exactly one wake row"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# One wake per run
+# ---------------------------------------------------------------------------
+
+def _write_task_authority(conn, task_id: str, run_id: str) -> None:
+    """Give a task the HM-Loop authority row a wake marker is built from."""
+    conn.execute(
+        "INSERT OR REPLACE INTO task_authority ("
+        "task_id, authority_version, scope, lineage_root_session_id, turn_id,"
+        "hm_loop_run_id, phase_id, attempt_no, root_task_id,"
+        "topology_generation, project_root, project_generation, workspace_kind,"
+        "workspace_path, network_policy, correlation_key, request_sha256,"
+        "created_at, authority_sha256) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            task_id, 1, "task", "session-root", f"turn-{task_id}", run_id,
+            "phase-1", 1, "root-task", 1, "/tmp/project", 1, "isolated",
+            "/tmp/project", "none", f"corr-{task_id}", "b" * 64, 1, "a" * 64,
+        ),
+    )
+    conn.commit()
+
+
+def _wake_member(row: dict, index: int) -> dict:
+    return {
+        "board": "default",
+        "task_id": row["task_id"],
+        "event_ids": [row["event_id"]],
+        "deferred": True,
+        "sub_key": f"{row['task_id']}:{index}",
+        "sub": 1,
+        "cursor": 1,
+        "old_cursor": 0,
+        "target": ("telegram", "outbox-chat", None),
+    }
+
+
+def test_wake_groups_split_one_target_batch_into_one_wake_per_run(kanban_home):
+    """A target is a chat, but a run is what a wake turn binds to.
+
+    Two runs sharing a chat must not share a wake: the plugin resolves exactly
+    one run per turn, so a merged wake would claim and acknowledge the other
+    run's events while leaving that run with nothing to continue it.
+    """
+    conn = kb.connect()
+    try:
+        run_a = [_make_subscribed_task(kb, conn) for _ in range(2)]
+        run_b = [_make_subscribed_task(kb, conn)]
+        for tid in run_a:
+            _write_task_authority(conn, tid, "run-a")
+        for tid in run_b:
+            _write_task_authority(conn, tid, "run-b")
+        for tid in run_a + run_b:
+            _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+    finally:
+        conn.close()
+    assert len(claimed) == 3, "fixture must claim all three terminal events"
+
+    claimed = [{**row, "board": "default"} for row in claimed]
+    members = [_wake_member(row, i) for i, row in enumerate(claimed)]
+    texts = [f"body-for-{row['task_id']}" for row in claimed]
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    groups = runner._kanban_wake_groups(members, texts, claimed)
+
+    assert len(groups) == 2, "two runs on one target must not share one wake"
+    by_run: dict[str, dict] = {}
+    for group in groups:
+        assert group["marker"], "each run's wake must carry its own marker"
+        assert group["marker"].startswith("HM_LOOP_WAKE_V1 ")
+        payload = json.loads(group["marker"].split(" ", 1)[1])
+        assert payload["run_id"] not in by_run, "one wake per run"
+        by_run[payload["run_id"]] = group
+    assert set(by_run) == {"run-a", "run-b"}
+
+    # Coverage is a partition: every claimed row lands in exactly one group.
+    covered = [row["outbox_id"] for group in groups for row in group["claimed"]]
+    assert sorted(covered) == sorted(row["outbox_id"] for row in claimed)
+
+    # Each group carries only its own run's tasks, text and claimed rows.
+    expected = {"run-a": set(run_a), "run-b": set(run_b)}
+    for run_id, group in by_run.items():
+        assert {m["task_id"] for m in group["members"]} == expected[run_id]
+        assert {row["task_id"] for row in group["claimed"]} == expected[run_id]
+        other = set(run_a + run_b) - expected[run_id]
+        for task_id in other:
+            assert f"body-for-{task_id}" not in group["text"]
+        for task_id in expected[run_id]:
+            assert f"body-for-{task_id}" in group["text"]
+
+
+def test_wake_groups_keep_a_single_run_in_one_wake(kanban_home):
+    """The split must not fragment an ordinary single-run target."""
+    conn = kb.connect()
+    try:
+        tids = [_make_subscribed_task(kb, conn) for _ in range(2)]
+        for tid in tids:
+            _write_task_authority(conn, tid, "run-only")
+        for tid in tids:
+            _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+    finally:
+        conn.close()
+    claimed = [{**row, "board": "default"} for row in claimed]
+    members = [_wake_member(row, i) for i, row in enumerate(claimed)]
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    groups = runner._kanban_wake_groups(
+        members, [f"body-{i}" for i in range(len(claimed))], claimed,
+    )
+
+    assert len(groups) == 1, "a single run must still yield a single wake"
+    assert {m["task_id"] for m in groups[0]["members"]} == set(tids)
+    payload = json.loads(groups[0]["marker"].split(" ", 1)[1])
+    assert payload["run_id"] == "run-only"
+    assert len(groups[0]["claimed"]) == len(claimed)
+
+
+def test_wake_groups_without_authority_deliver_unmarked(kanban_home):
+    """No ``task_authority`` row means no bindable marker, not a guessed one."""
+    conn = kb.connect()
+    try:
+        tid = _make_subscribed_task(kb, conn)
+        _emit_terminal(kb, conn, tid, "completed")
+        claimed = kb.claim_outbox_batch_for_target(
+            conn, platform="telegram", chat_id="outbox-chat",
+        )
+    finally:
+        conn.close()
+    claimed = [{**row, "board": "default"} for row in claimed]
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    groups = runner._kanban_wake_groups(
+        [_wake_member(claimed[0], 0)], ["body"], claimed,
+    )
+
+    assert len(groups) == 1
+    assert groups[0]["marker"] is None
+    assert groups[0]["text"].startswith("body")
+    assert len(groups[0]["claimed"]) == len(claimed)
