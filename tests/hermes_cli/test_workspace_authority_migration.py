@@ -208,3 +208,49 @@ def test_non_git_workspace_does_not_capture_authority(tmp_path: str) -> None:
             assert row is None
         finally:
             conn.close()
+
+def test_set_workspace_path_backfills_task_runs_workspace_start_columns(tmp_path: str) -> None:
+    """When a task_runs row exists with NULL workspace_start_* (because claim_task
+    ran before set_workspace_path), the next set_workspace_path call must
+    backfill those columns from the freshly-captured authority row."""
+    import hermes_cli.kanban_db as kb
+    import hermes_cli.kanban_db_workspace as kdw
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = _build_git_repo(tmp)
+        db_path = os.path.join(tmp, "test.db")
+        conn = _open_test_db(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO tasks(id, title, status, workspace_kind, created_at, assignee) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("task1", "test", "ready", "scratch", 1234567890, "test-profile"),
+            )
+            conn.commit()
+            # Simulate the dispatch hot-path order: claim_task inserts task_runs
+            # BEFORE set_workspace_path runs.
+            claimed = kb.claim_task(conn, "task1", ttl_seconds=300)
+            assert claimed is not None
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ?",
+                ("task1",),
+            ).fetchone()
+            # At claim-time, set_workspace_path hasn't run yet, so the columns
+            # stay NULL even though the migration populated them.
+            assert run_row["workspace_start_commit"] is None
+            # Now run the dispatcher hot-path step.
+            kdw.set_workspace_path(conn, "task1", repo_root)
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ?",
+                ("task1",),
+            ).fetchone()
+            # set_workspace_path must have backfilled the columns from the
+            # authority row it just wrote.
+            assert run_row["workspace_start_commit"] is not None
+            assert run_row["workspace_start_tree"] is not None
+            assert run_row["workspace_authority_sha256"] is not None
+            assert len(run_row["workspace_authority_sha256"]) == 64
+        finally:
+            conn.close()

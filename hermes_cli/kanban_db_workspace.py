@@ -589,6 +589,15 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
     for the same task when ``path`` is inside a git repo. The capture is
     best-effort: a non-git path leaves the authority table alone and the
     run simply gets NULL authority columns.
+
+    When the task already has a ``task_runs`` row whose
+    ``workspace_start_commit/tree/authority_sha256`` are still NULL (the
+    dispatch hot path inserts the run row BEFORE the workspace is bound;
+    see :func:`hermes_cli.kanban_db._claim_and_open_run`), this also stamps
+    those columns from the freshly-captured authority row so downstream
+    consumers (hm-loop) see the run actually started in the workspace the
+    dispatcher promised. The check uses ``WHERE workspace_start_commit IS
+    NULL`` so it never overwrites an already-populated row.
     """
     _set_task_column(conn, task_id, "workspace_path", str(path))
     try:
@@ -603,6 +612,33 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
         # Authority capture is best-effort during the dispatch hot path;
         # if git lookup fails or the table is not yet migrated, the run
         # simply gets NULL authority columns rather than failing the claim.
+        pass
+    try:
+        with _kb.write_txn(conn):
+            conn.execute(
+                """
+                UPDATE task_runs SET
+                    workspace_start_commit = (
+                        SELECT base_commit FROM task_workspace_authority
+                        WHERE task_id = ?
+                    ),
+                    workspace_start_tree = (
+                        SELECT base_tree FROM task_workspace_authority
+                        WHERE task_id = ?
+                    ),
+                    workspace_authority_sha256 = (
+                        SELECT authority_sha256 FROM task_workspace_authority
+                        WHERE task_id = ?
+                    )
+                WHERE task_id = ?
+                  AND workspace_start_commit IS NULL
+                """,
+                (task_id, task_id, task_id, task_id),
+            )
+    except Exception:
+        # task_runs may not yet have the new columns on a board that has
+        # not migrated; the next dispatch tick re-attempts after migration
+        # settles.
         pass
 
 
