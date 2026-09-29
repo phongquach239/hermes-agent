@@ -7,16 +7,18 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import os
 import shutil
 import sqlite3
 import subprocess
 import time
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
-import contextlib
 
 from hermes_cli.worktree_ops import release_lsp_clients
 
@@ -583,11 +585,128 @@ def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value:
 
 
 def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str) -> None:
+    """Persist ``tasks.workspace_path`` and stamp ``task_workspace_authority``
+    for the same task when ``path`` is inside a git repo. The capture is
+    best-effort: a non-git path leaves the authority table alone and the
+    run simply gets NULL authority columns.
+    """
     _set_task_column(conn, task_id, "workspace_path", str(path))
+    try:
+        capture_workspace_authority(
+            conn,
+            task_id=task_id,
+            workspace=Path(path),
+            source="dispatch.set_workspace_path",
+            captured_by="kanban_db_workspace",
+        )
+    except Exception:
+        # Authority capture is best-effort during the dispatch hot path;
+        # if git lookup fails or the table is not yet migrated, the run
+        # simply gets NULL authority columns rather than failing the claim.
+        pass
 
 
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:
-    _set_task_column(conn, task_id, "branch_name", str(branch_name))
+    _set_task_column(conn, task_id, "branch_name", branch_name)
+    try:
+        # Refresh the authority row with the branch name when one was set
+        # after the initial capture; the row is keyed on task_id, so the
+        # UPDATE path above keeps a single row per task and reflects the
+        # latest branch_name.
+        path_row = conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if path_row is not None and path_row["workspace_path"]:
+            capture_workspace_authority(
+                conn,
+                task_id=task_id,
+                workspace=Path(path_row["workspace_path"]),
+                branch_name=branch_name,
+                source="dispatch.set_branch_name",
+                captured_by="kanban_db_workspace",
+            )
+    except Exception:
+        pass
+
+
+def capture_workspace_authority(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    workspace: Path,
+    branch_name: Optional[str] = None,
+    source: str,
+    captured_by: str,
+) -> Optional[dict]:
+    """Capture ``task_workspace_authority`` for ``task_id`` from the
+    current state of ``workspace``.
+
+    ``source`` identifies the capture path that produced the row
+    (``dispatch.set_workspace_path``, ``claim_task``, ``resolve_workspace``);
+    ``captured_by`` is the actor (profile name / caller id). Both are stored
+    so a downstream consumer can tell which code path stamped the row.
+
+    Returns the captured row as a dict, or ``None`` if ``workspace`` is not
+    inside a git repo (the dispatcher's normal flow still continues — the
+    run simply gets NULL authority columns and downstream readers skip it).
+    """
+    try:
+        workspace_abs = workspace.resolve(strict=False)
+    except OSError:
+        return None
+    repo_root = _git_toplevel(workspace_abs)
+    if repo_root is None:
+        return None
+    head_proc = _git(repo_root, "rev-parse", "HEAD", timeout=10)
+    if head_proc.returncode != 0:
+        return None
+    base_commit = head_proc.stdout.strip()
+    if not base_commit:
+        return None
+    tree_proc = _git(repo_root, "rev-parse", f"{base_commit}^{{tree}}", timeout=10)
+    if tree_proc.returncode != 0:
+        return None
+    base_tree = tree_proc.stdout.strip()
+    if not base_tree:
+        return None
+    authority_payload = (
+        f"{task_id}\n{base_commit}\n{base_tree}\n"
+        f"{source}\n{(branch_name or '').strip()}"
+    )
+    authority_sha256 = hashlib.sha256(authority_payload.encode("utf-8")).hexdigest()
+    captured_at = datetime.now(timezone.utc).isoformat()
+    with _kb.write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO task_workspace_authority(
+                task_id, base_commit, base_tree, authority_sha256,
+                source, branch_name, captured_at, captured_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                base_commit      = excluded.base_commit,
+                base_tree        = excluded.base_tree,
+                authority_sha256 = excluded.authority_sha256,
+                source           = excluded.source,
+                branch_name      = excluded.branch_name,
+                captured_at      = excluded.captured_at,
+                captured_by      = excluded.captured_by
+            """,
+            (
+                task_id, base_commit, base_tree, authority_sha256,
+                source, (branch_name or "").strip() or None,
+                captured_at, captured_by,
+            ),
+        )
+    return {
+        "task_id": task_id,
+        "base_commit": base_commit,
+        "base_tree": base_tree,
+        "authority_sha256": authority_sha256,
+        "source": source,
+        "branch_name": (branch_name or "").strip() or None,
+        "captured_at": captured_at,
+        "captured_by": captured_by,
+    }
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
