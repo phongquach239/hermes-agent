@@ -55,10 +55,10 @@ def test_migration_idempotent_creates_table_and_journal(tmp_path: str) -> None:
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert "task_workspace_authority" in tables
-        assert "hm_gate_migration_journal" in tables
+        assert "hm_kanban_schema_journal" in tables
 
         rows = list(
-            conn.execute("SELECT migration_id FROM hm_gate_migration_journal")
+            conn.execute("SELECT migration_id FROM hm_kanban_schema_journal")
         )
         assert len(rows) == 1
         assert rows[0][0] == "v1_workspace_authority_20260928"
@@ -66,7 +66,7 @@ def test_migration_idempotent_creates_table_and_journal(tmp_path: str) -> None:
         # Re-run; the journal must still have exactly one row.
         kdc._migrate_v1_workspace_authority(conn)
         rows = list(
-            conn.execute("SELECT migration_id FROM hm_gate_migration_journal")
+            conn.execute("SELECT migration_id FROM hm_kanban_schema_journal")
         )
         assert len(rows) == 1
     finally:

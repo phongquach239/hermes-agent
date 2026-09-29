@@ -972,31 +972,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 # races between an old board without the table and a new code path that
 # SELECTs from it must be closed with an explicit "applied?" check, not by
 # pretending the table was always there.
+#
+# NOTE: this journal lives in the KANBAN db (``kanban.db``), not in
+# ``gates.db``. ``hm-loop`` owns its own ``hm_gate_migration_journal`` in
+# ``gates.db`` for decision-event lifecycle; Core owns ``hm_kanban_schema_journal``
+# here for kanban table/column lifecycle. Keeping them separate stops
+# "which side writes here?" from leaking into a migration run.
 _WORKSPACE_AUTHORITY_MIGRATION_ID = "v1_workspace_authority_20260928"
 
 
 def _migrate_v1_workspace_authority(conn: sqlite3.Connection) -> None:
     """Idempotent migration: add ``task_workspace_authority`` table and the
     journal row recording that this code path owns the DDL.
-
-    The journal lives in a dedicated table (``hm_gate_migration_journal``)
-    rather than the schema-migration table the rest of the codebase uses,
-    because kanban_db_connect does not own that table and adding the new
-    ``task_workspace_authority`` columns to ``task_runs`` is itself driven
-    from the existing ``_TASK_RUN_AUTHORITY_COLUMNS`` table — the journal is
-    what marks the table-addition as committed vs. pending for downstream
-    readers.
     """
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS hm_gate_migration_journal(
+        CREATE TABLE IF NOT EXISTS hm_kanban_schema_journal(
             migration_id TEXT PRIMARY KEY,
             applied_at   TEXT NOT NULL
         );
         """
     )
     if conn.execute(
-        "SELECT 1 FROM hm_gate_migration_journal WHERE migration_id = ?",
+        "SELECT 1 FROM hm_kanban_schema_journal WHERE migration_id = ?",
         (_WORKSPACE_AUTHORITY_MIGRATION_ID,),
     ).fetchone() is not None:
         return
@@ -1018,7 +1016,7 @@ def _migrate_v1_workspace_authority(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "INSERT OR IGNORE INTO hm_gate_migration_journal(migration_id, applied_at) "
+        "INSERT OR IGNORE INTO hm_kanban_schema_journal(migration_id, applied_at) "
         "VALUES (?, datetime('now'))",
         (_WORKSPACE_AUTHORITY_MIGRATION_ID,),
     )
