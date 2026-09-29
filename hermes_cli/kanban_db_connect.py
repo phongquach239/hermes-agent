@@ -857,6 +857,17 @@ _TASK_RUN_COLUMNS = (
     ("worker_started_at", "worker_started_at INTEGER"),
 )
 
+# Workspace authority columns on ``task_runs`` — captured at claim time so
+# ``hm-loop`` (and any downstream consumer) can verify that the run started in
+# the workspace the dispatcher promised. NULL is allowed for legacy rows and
+# for runs spawned before the dispatcher started recording the values.
+# See hermes_cli/kanban_db_workspace.py::capture_workspace_authority.
+_TASK_RUN_AUTHORITY_COLUMNS = (
+    ("workspace_start_commit", "workspace_start_commit TEXT"),
+    ("workspace_start_tree", "workspace_start_tree TEXT"),
+    ("workspace_authority_sha256", "workspace_authority_sha256 TEXT"),
+)
+
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -930,10 +941,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     if _table_exists(conn, "task_runs"):
         run_cols = _column_names(conn, "task_runs")
-        for name, ddl in _TASK_RUN_COLUMNS:
+        for name, ddl in _TASK_RUN_COLUMNS + _TASK_RUN_AUTHORITY_COLUMNS:
             if name not in run_cols:
                 _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
+
+    # workspace authority (one-shot, versioned). Idempotent: a board that
+    # already ran the migration has ``task_workspace_authority`` present and the
+    # journal row committed, so the no-op path is fast and safe.
+    _migrate_v1_workspace_authority(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
@@ -945,6 +961,67 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
 
     _rebuild_drifted_tables(conn)
+
+
+# Migration journal: the kanban schema has been built additively (ALTER TABLE
+# ADD COLUMN + CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS) so a
+# fresh board and a board upgraded through 30+ releases reach the same shape
+# without an explicit version table. ``task_workspace_authority`` is the
+# first DDL that needs a one-shot, ordered, idempotent boundary: it is read
+# by downstream consumers (hm-loop) before the dispatcher populates it, so
+# races between an old board without the table and a new code path that
+# SELECTs from it must be closed with an explicit "applied?" check, not by
+# pretending the table was always there.
+_WORKSPACE_AUTHORITY_MIGRATION_ID = "v1_workspace_authority_20260928"
+
+
+def _migrate_v1_workspace_authority(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: add ``task_workspace_authority`` table and the
+    journal row recording that this code path owns the DDL.
+
+    The journal lives in a dedicated table (``hm_gate_migration_journal``)
+    rather than the schema-migration table the rest of the codebase uses,
+    because kanban_db_connect does not own that table and adding the new
+    ``task_workspace_authority`` columns to ``task_runs`` is itself driven
+    from the existing ``_TASK_RUN_AUTHORITY_COLUMNS`` table — the journal is
+    what marks the table-addition as committed vs. pending for downstream
+    readers.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS hm_gate_migration_journal(
+            migration_id TEXT PRIMARY KEY,
+            applied_at   TEXT NOT NULL
+        );
+        """
+    )
+    if conn.execute(
+        "SELECT 1 FROM hm_gate_migration_journal WHERE migration_id = ?",
+        (_WORKSPACE_AUTHORITY_MIGRATION_ID,),
+    ).fetchone() is not None:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS task_workspace_authority(
+            task_id           TEXT PRIMARY KEY,
+            base_commit       TEXT NOT NULL,
+            base_tree         TEXT NOT NULL,
+            authority_sha256  TEXT NOT NULL,
+            source            TEXT NOT NULL,
+            branch_name       TEXT,
+            captured_at       TEXT NOT NULL,
+            captured_by       TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_workspace_authority_base_commit
+            ON task_workspace_authority(base_commit);
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO hm_gate_migration_journal(migration_id, applied_at) "
+        "VALUES (?, datetime('now'))",
+        (_WORKSPACE_AUTHORITY_MIGRATION_ID,),
+    )
 
 
 def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:

@@ -2219,6 +2219,36 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
     return [(row["id"], row["status"]) for row in rows]
 
 
+def _resolve_workspace_authority(conn: sqlite3.Connection, task_id: str, column: str) -> Optional[str]:
+    """Read ``task_workspace_authority`` for ``task_id`` and return the
+    requested column (``start_commit`` / ``start_tree`` / ``authority_sha256``).
+
+    Returns ``None`` when the task has no authority row (legacy or non-git
+    workspace) so the corresponding ``task_runs.workspace_start_*`` column
+    stays NULL — ``hm-loop`` reads NULL as "no authority claim recorded".
+    """
+    db_column = {
+        "start_commit": "base_commit",
+        "start_tree": "base_tree",
+        "authority_sha256": "authority_sha256",
+    }.get(column)
+    if db_column is None:
+        return None
+    table_present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_workspace_authority'",
+    ).fetchone()
+    if table_present is None:
+        return None
+    row = conn.execute(
+        f"SELECT {db_column} FROM task_workspace_authority WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    value = row[db_column]
+    return value if value else None
+
+
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
@@ -2249,12 +2279,17 @@ def _claim_and_open_run(
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
             claim_lock, claim_expires, max_runtime_seconds,
+            workspace_start_commit, workspace_start_tree, workspace_authority_sha256,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
-            lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            lock, expires, trow["max_runtime_seconds"] if trow else None,
+            _resolve_workspace_authority(conn, task_id, "start_commit"),
+            _resolve_workspace_authority(conn, task_id, "start_tree"),
+            _resolve_workspace_authority(conn, task_id, "authority_sha256"),
+            now,
         ),
     )
     run_id = run_cur.lastrowid
