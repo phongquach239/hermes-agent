@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import time
 from typing import Any, Iterable, Optional
 
@@ -121,16 +122,34 @@ def create_swarm(
     priority: int = 0,
     idempotency_key: Optional[str] = None,
     per_task_worktrees: bool = False,
+    git_base_commit: Optional[str] = None,
+    git_base_tree: Optional[str] = None,
 ) -> SwarmCreated:
     """Create an atomic swarm, optionally planning distinct worktree targets.
 
     ``per_task_worktrees`` interprets ``workspace_path`` as the existing project
     root. Plans are persisted before activation, not rebound after dispatch;
     this does not create worktrees or certify their Git authority.
+
+    F02 frozen-workspace-basis: when ``per_task_worktrees=True`` AND
+    ``git_base_commit`` / ``git_base_tree`` are provided, ``create_swarm``
+    binds an immutable plan row in ``task_workspace_plans`` for every swarm
+    member BEFORE activating the planning root. When the frozen base is
+    omitted, ``create_swarm`` captures the CURRENT basis once (HEAD /
+    HEAD^{tree} at activation time) and binds that captured basis to every
+    swarm member. The activation flow is ``bind plan -> activate root``;
+    plan binding and activation share one transaction; the dispatcher's
+    later ``resolve_workspace`` materializes the validated frozen plan.
+
+    ``git_base_commit`` / ``git_base_tree`` are optional. Explicit objects
+    are validated without normalizing their spelling. Otherwise activation
+    captures the current basis once and exact replay reuses that stored basis.
+    Missing plans on an active topology refuse rather than recertify history.
     """
     if type(per_task_worktrees) is not bool:
         raise ValueError("per_task_worktrees must be a boolean")
     project_root = None
+    capture_basis = git_base_commit is None and git_base_tree is None
     if per_task_worktrees:
         if workspace_kind != "worktree" or not workspace_path or not Path(workspace_path).is_absolute():
             raise ValueError("per-task worktree planning requires an absolute workspace root")
@@ -140,6 +159,14 @@ def create_swarm(
             raise ValueError("worktree workspace root does not exist") from exc
         if not project_root.is_dir():
             raise ValueError("worktree workspace root must be a directory")
+        # F02: validate frozen base inputs (commit + tree both present, or
+        # both absent). Capture the current basis once when the caller
+        # chose not to pin it.
+        if (git_base_commit is None) != (git_base_tree is None):
+            raise ValueError(
+                "git_base_commit and git_base_tree must be provided together "
+                "(both or neither)."
+            )
     activation_summary = "Swarm topology planned; root remains the shared blackboard."
     activated = False
     with kb.write_txn(conn):
@@ -161,15 +188,66 @@ def create_swarm(
             }
             if len(expected_parents) != len(task_ids):
                 raise ValueError("swarm workspace plan contains repeated roles")
+            # Bind the immutable plan rows BEFORE activating the root.
+            # ``bind_workspace_plan`` uses allow_nested=True composition so
+            # the plan INSERT participates in this outer transaction and
+            # rolls back atomically with anything that fails between here
+            # and root activation. Direct writes outside an outer
+            # transaction still use BEGIN IMMEDIATE / COMMIT.
+            from hermes_cli import kanban_db_workspace as kdw
+            if root is None:
+                raise ValueError("swarm workspace plan has no root")
+            if root.status != "blocked":
+                # Replay may validate existing authority, never recreate it.
+                existing_plans = {
+                    task_id: kdw.resolve_workspace_plan_from_commit(conn, task_id)
+                    for task_id in task_ids
+                }
+                if any(plan is None for plan in existing_plans.values()):
+                    raise ValueError("active swarm workspace plan is missing")
+                if capture_basis:
+                    # Omitted inputs mean capture ONCE, not refresh on replay.
+                    root_plan = existing_plans[created.root_id]
+                    git_base_commit = root_plan["base_commit"]
+                    git_base_tree = root_plan["base_tree"]
+            elif capture_basis:
+                # A new planned topology needs an actual frozen basis. A
+                # non-Git or unborn project cannot become ready with NULLs.
+                # Replays above reuse the stored basis without reading HEAD.
+                head_proc = subprocess.run(
+                    ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10, check=False,
+                )
+                if head_proc.returncode != 0 or not head_proc.stdout.strip():
+                    raise ValueError("worktree planning requires a frozen Git basis: no committed HEAD")
+                git_base_commit = head_proc.stdout.strip()
+                tree_proc = subprocess.run(
+                    ["git", "-C", str(project_root), "rev-parse", f"{git_base_commit}^{{tree}}"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10, check=False,
+                )
+                if tree_proc.returncode != 0 or not tree_proc.stdout.strip():
+                    raise ValueError("worktree planning requires a frozen Git basis: commit tree unavailable")
+                git_base_tree = tree_proc.stdout.strip()
             for task_id in task_ids:
+                if set(kb.parent_ids(conn, task_id)) != expected_parents[task_id]:
+                    raise ValueError("swarm workspace plan has foreign graph members")
                 planned_path = project_root / ".worktrees" / task_id
                 if planned_path.resolve() != planned_path:
                     raise ValueError("swarm workspace plan resolves outside its canonical target")
-                if set(kb.parent_ids(conn, task_id)) != expected_parents[task_id]:
-                    raise ValueError("swarm workspace plan has foreign graph members")
-                planned = str(planned_path)
-                # Only an unactivated topology may acquire its initial plan.
-                # Active replays must validate unchanged rows, never rewrite them.
+                plan = kdw.bind_workspace_plan(
+                    conn,
+                    task_id=task_id,
+                    workspace_root=project_root,
+                    workspace_path=planned_path,
+                    base_commit=git_base_commit,
+                    base_tree=git_base_tree,
+                )
+                # Persist the canonical worktree path on the task row, but
+                # ONLY for an unactivated topology and ONLY when the row is
+                # still pristine (no run has touched it). Active replays
+                # validate unchanged rows, never rewrite them.
                 if root is not None and root.status == "blocked":
                     updated = conn.execute(
                         """UPDATE tasks SET workspace_path=?
@@ -177,13 +255,18 @@ def create_swarm(
                              AND current_run_id IS NULL AND worker_pid IS NULL
                              AND workspace_kind='worktree' AND workspace_path=?
                              AND NOT EXISTS (SELECT 1 FROM task_runs WHERE task_id=tasks.id)""",
-                        (planned, task_id, workspace_path),
+                        (str(planned_path), task_id, workspace_path),
                     )
                     if updated.rowcount != 1:
                         raise ValueError("swarm workspace plan cannot be bound before activation")
                 task = kb.get_task(conn, task_id)
-                if task is None or task.workspace_kind != "worktree" or task.workspace_path != planned:
+                if task is None or task.workspace_kind != "worktree" or task.workspace_path != str(planned_path):
                     raise ValueError("swarm workspace plan differs on replay")
+                # A planned topology always requires a complete validated
+                # basis, including active replay of older NULL-basis plans.
+                kdw._validate_plan_for_materialization(
+                    plan, task, expected_repo_root=project_root,
+                )
         if root is not None and root.status == "blocked":
             if not _activate_root_inline(
                 conn,

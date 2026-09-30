@@ -868,6 +868,16 @@ _TASK_RUN_AUTHORITY_COLUMNS = (
     ("workspace_authority_sha256", "workspace_authority_sha256 TEXT"),
 )
 
+# Workspace authority table column added in the F02 plans migration: the
+# SELECTED project anchor (the path the caller actually bound). Pre-F02
+# rows stay NULL — we never retrofit historical provenance. Additive on the
+# v1_workspace_authority table; the v1 migration row in
+# ``hm_kanban_schema_journal`` is the one that owns the table.
+_TASK_WORKSPACE_AUTHORITY_PLAN_COLUMNS = (
+    ("workspace_root", "workspace_root TEXT"),
+    ("plan_version", "plan_version INTEGER"),
+)
+
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -951,6 +961,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # journal row committed, so the no-op path is fast and safe.
     _migrate_v1_workspace_authority(conn)
 
+    # F02 additive columns on ``task_workspace_authority`` (selected project
+    # anchor + plan_version). Idempotent: ``_add_column_if_missing`` is a
+    # no-op when the column already exists. Pre-F02 rows keep NULL for both —
+    # we never retrofit historical provenance.
+    if _table_exists(conn, "task_workspace_authority"):
+        auth_cols = _column_names(conn, "task_workspace_authority")
+        for name, ddl in _TASK_WORKSPACE_AUTHORITY_PLAN_COLUMNS:
+            if name not in auth_cols:
+                _add_column_if_missing(conn, "task_workspace_authority", name, ddl)
+
+    # F02 frozen-workspace-basis plans (one-shot, additive). Idempotent: a
+    # board that already ran the migration has ``task_workspace_plans`` present
+    # and the journal row committed, so the no-op path is fast and safe. The
+    # plan rows live in their own table and never mutate ``task_workspace_authority``
+    # — fresh captures and frozen plans are distinct producers in distinct
+    # domains.
+    _migrate_v1_workspace_plans(conn)
+
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
     for old, new in (
@@ -1019,6 +1047,86 @@ def _migrate_v1_workspace_authority(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO hm_kanban_schema_journal(migration_id, applied_at) "
         "VALUES (?, datetime('now'))",
         (_WORKSPACE_AUTHORITY_MIGRATION_ID,),
+    )
+
+
+# F02 frozen-workspace-basis plans migration: a separate, additive table for
+# the immutable per-task plan row (selected project anchor + canonical
+# worktree path + frozen base commit/tree + basis digest). The migration is
+# ONE-SHOT, IDEMPOTENT and ADDITIVE; it never touches the
+# ``task_workspace_authority`` rows or the v1 authority journal row.
+_WORKSPACE_PLANS_MIGRATION_ID = "v1_workspace_plans_20260930"
+
+
+def _migrate_v1_workspace_plans(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: add ``task_workspace_plans`` table and journal.
+
+    The plan row records the SELECTED project anchor (``workspace_root``), the
+    canonical worktree path (``workspace_path``), the frozen base commit /
+    tree, the plan version, and the deterministic basis digest. The plan is
+    immutable once bound: replays validate (no rewrite); conflicting active
+    plans refuse; missing active plans for an activated swarm refuse.
+
+    Captured fresh ``task_workspace_authority`` rows and frozen
+    ``task_workspace_plans`` rows live in separate tables by design — they are
+    distinct producers in distinct domains, and the digest inputs differ (the
+    plan digest is over ``(plan_version, task_id, root, path, commit, tree)``
+    only, not source/branch/captured_at).
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS hm_kanban_schema_journal(
+            migration_id TEXT PRIMARY KEY,
+            applied_at   TEXT NOT NULL
+        );
+        """
+    )
+    if conn.execute(
+        "SELECT 1 FROM hm_kanban_schema_journal WHERE migration_id = ?",
+        (_WORKSPACE_PLANS_MIGRATION_ID,),
+    ).fetchone() is not None:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS task_workspace_plans(
+            task_id        TEXT PRIMARY KEY,
+            -- Selected project anchor — the path the operator / caller
+            -- actually bound this task to (NOT derived from git
+            -- ``--show-toplevel`` or a common-dir join). Required: every
+            -- plan row must record WHERE the selected project lives.
+            workspace_root TEXT NOT NULL,
+            -- Canonical worktree target the swarm activation will (or did)
+            -- create under ``workspace_root``. Required.
+            workspace_path TEXT NOT NULL,
+            -- Frozen base commit + tree the worktree MUST resolve from; NULL
+            -- is allowed when no Git basis exists (the operator bound a
+            -- project that is not yet a git repo, or the dispatch path
+            -- runs before any worktree materialization). The basis digest
+            -- over NULLs is still deterministic.
+            base_commit    TEXT,
+            base_tree      TEXT,
+            -- Plan schema version. v1 = this layout. Bumped when the digest
+            -- inputs change in an incompatible way.
+            plan_version   INTEGER NOT NULL,
+            -- Deterministic basis digest over
+            -- ``(plan_version, task_id, root, path, commit, tree)``.
+            basis_digest   TEXT NOT NULL,
+            -- When the plan was first bound. Provenance only — not a digest
+            -- input.
+            bound_at       TEXT NOT NULL,
+            bound_by       TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_workspace_plans_root
+            ON task_workspace_plans(workspace_root);
+        CREATE INDEX IF NOT EXISTS idx_task_workspace_plans_base_commit
+            ON task_workspace_plans(base_commit);
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO hm_kanban_schema_journal(migration_id, applied_at) "
+        "VALUES (?, datetime('now'))",
+        (_WORKSPACE_PLANS_MIGRATION_ID,),
     )
 
 

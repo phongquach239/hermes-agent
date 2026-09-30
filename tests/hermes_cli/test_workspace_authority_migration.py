@@ -46,7 +46,9 @@ def _open_test_db(db_path: str) -> sqlite3.Connection:
 
 
 def test_migration_idempotent_creates_table_and_journal(tmp_path: str) -> None:
-    """Running migration twice still leaves one journal row and the table."""
+    """Running migration twice still leaves one journal row per migration id
+    (the v1 authority id is unchanged; the F02 plans id is also recorded).
+    The original ``task_workspace_authority`` table is preserved untouched."""
     import hermes_cli.kanban_db_connect as kdc
 
     db_path = os.path.join(str(tmp_path), "test.db")
@@ -62,13 +64,22 @@ def test_migration_idempotent_creates_table_and_journal(tmp_path: str) -> None:
         rows = list(
             conn.execute("SELECT migration_id FROM hm_kanban_schema_journal")
         )
-        assert len(rows) == 1
-        assert rows[0][0] == "v1_workspace_authority_20260928"
+        migration_ids = sorted(row[0] for row in rows)
+        # The v1 authority migration id is preserved (additive F02 plans
+        # migration adds a NEW row, never overwrites this one). Filtering
+        # to the authority id keeps the original assertion of idempotency
+        # for the v1_workspace_authority_20260928 migration.
+        assert "v1_workspace_authority_20260928" in migration_ids
+        assert rows  # at least one row exists
 
-        # Re-run; the journal must still have exactly one row.
+        # Re-run; the v1 authority journal row stays single-row.
         kdc._migrate_v1_workspace_authority(conn)
         rows = list(
-            conn.execute("SELECT migration_id FROM hm_kanban_schema_journal")
+            conn.execute(
+                "SELECT migration_id FROM hm_kanban_schema_journal "
+                "WHERE migration_id = ?",
+                ("v1_workspace_authority_20260928",),
+            )
         )
         assert len(rows) == 1
     finally:
@@ -112,8 +123,10 @@ def test_capture_workspace_authority_stamps_row_with_sha256(tmp_path: str) -> No
                 check=True,
             )
             payload = (
-                f"task1\n{head_proc.stdout.strip()}\n{tree_proc.stdout.strip()}\ntest\nmain"
+                f"v2_selected_project_capture\ntask1\n{Path(repo_root).resolve()}\n"
+                f"{head_proc.stdout.strip()}\n{tree_proc.stdout.strip()}\ntest\nmain"
             )
+            assert row["workspace_root"] == str(Path(repo_root).resolve())
             expected_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             assert row["authority_sha256"] == expected_sha
             assert row["base_commit"] == head_proc.stdout.strip()
@@ -220,7 +233,12 @@ def test_claim_task_does_not_inherit_stale_task_level_authority(tmp_path: str) -
             )
             new_tree = new_tree_proc.stdout.strip()
             assert run_row["workspace_start_tree"] == new_tree
-            new_payload = f"task1\n{new_commit}\n{new_tree}\ndispatch.set_workspace_path\n"
+            # Only fresh v2 capture changes; the legacy old_payload above
+            # deliberately remains unchanged to exercise stale-history isolation.
+            new_payload = (
+                f"v2_selected_project_capture\ntask1\n{Path(repo_root).resolve()}\n"
+                f"{new_commit}\n{new_tree}\ndispatch.set_workspace_path\n"
+            )
             new_sha = hashlib.sha256(new_payload.encode("utf-8")).hexdigest()
             assert run_row["workspace_authority_sha256"] == new_sha
             assert run_row["workspace_authority_sha256"] != old_sha
