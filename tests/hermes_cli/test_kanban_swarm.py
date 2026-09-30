@@ -263,6 +263,18 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         conn.close()
 
 
+def _init_worktree_project(root):
+    """Planning fixtures need a real basis so later fault injections are reached."""
+    import subprocess
+
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init", "-q", "-b", "main"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture",
+                    "-c", "user.email=fixture@example.invalid", "commit",
+                    "--allow-empty", "-qm", "Fixture basis"], check=True, capture_output=True)
+
+
 @pytest.mark.parametrize("replay_mutation", [None, "workspace_path", "workspace_kind"])
 def test_per_task_worktree_plans_precede_activation_and_replay_is_read_only(
     tmp_path, monkeypatch, replay_mutation,
@@ -271,7 +283,7 @@ def test_per_task_worktree_plans_precede_activation_and_replay_is_read_only(
     from hermes_cli import kanban_swarm as swarm
 
     root = tmp_path / "project"
-    root.mkdir()
+    _init_worktree_project(root)
     writer = kbc.connect(tmp_path / "board.db")
     reader = kbc.connect(tmp_path / "board.db")
     activate = swarm._activate_root_inline
@@ -325,7 +337,7 @@ def test_per_task_workspace_plan_failure_preserves_existing_board(tmp_path, monk
     from hermes_cli import kanban_swarm as swarm
 
     root = tmp_path / "project"
-    root.mkdir()
+    _init_worktree_project(root)
     conn = kbc.connect(tmp_path / "board.db")
     hooks = []
     monkeypatch.setattr(kb, "_fire_kanban_lifecycle_hook", lambda *a, **kw: hooks.append(True))
