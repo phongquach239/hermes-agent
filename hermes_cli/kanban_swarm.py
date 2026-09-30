@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+from pathlib import Path
 import sqlite3
 import time
 from typing import Any, Iterable, Optional
@@ -119,8 +120,26 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    per_task_worktrees: bool = False,
 ) -> SwarmCreated:
-    """Atomically create a durable, immediately dispatchable Kanban swarm."""
+    """Create an atomic swarm, optionally planning distinct worktree targets.
+
+    ``per_task_worktrees`` interprets ``workspace_path`` as the existing project
+    root. Plans are persisted before activation, not rebound after dispatch;
+    this does not create worktrees or certify their Git authority.
+    """
+    if type(per_task_worktrees) is not bool:
+        raise ValueError("per_task_worktrees must be a boolean")
+    project_root = None
+    if per_task_worktrees:
+        if workspace_kind != "worktree" or not workspace_path or not Path(workspace_path).is_absolute():
+            raise ValueError("per-task worktree planning requires an absolute workspace root")
+        try:
+            project_root = Path(workspace_path).resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("worktree workspace root does not exist") from exc
+        if not project_root.is_dir():
+            raise ValueError("worktree workspace root must be a directory")
     activation_summary = "Swarm topology planned; root remains the shared blackboard."
     activated = False
     with kb.write_txn(conn):
@@ -132,6 +151,39 @@ def create_swarm(
             priority=priority, idempotency_key=idempotency_key,
         )
         root = kb.get_task(conn, created.root_id)
+        if project_root is not None:
+            task_ids = [created.root_id, *created.worker_ids, created.verifier_id, created.synthesizer_id]
+            expected_parents = {
+                created.root_id: set(),
+                **{task_id: {created.root_id} for task_id in created.worker_ids},
+                created.verifier_id: set(created.worker_ids),
+                created.synthesizer_id: {created.verifier_id},
+            }
+            if len(expected_parents) != len(task_ids):
+                raise ValueError("swarm workspace plan contains repeated roles")
+            for task_id in task_ids:
+                planned_path = project_root / ".worktrees" / task_id
+                if planned_path.resolve() != planned_path:
+                    raise ValueError("swarm workspace plan resolves outside its canonical target")
+                if set(kb.parent_ids(conn, task_id)) != expected_parents[task_id]:
+                    raise ValueError("swarm workspace plan has foreign graph members")
+                planned = str(planned_path)
+                # Only an unactivated topology may acquire its initial plan.
+                # Active replays must validate unchanged rows, never rewrite them.
+                if root is not None and root.status == "blocked":
+                    updated = conn.execute(
+                        """UPDATE tasks SET workspace_path=?
+                           WHERE id=? AND status IN ('blocked','todo')
+                             AND current_run_id IS NULL AND worker_pid IS NULL
+                             AND workspace_kind='worktree' AND workspace_path=?
+                             AND NOT EXISTS (SELECT 1 FROM task_runs WHERE task_id=tasks.id)""",
+                        (planned, task_id, workspace_path),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError("swarm workspace plan cannot be bound before activation")
+                task = kb.get_task(conn, task_id)
+                if task is None or task.workspace_kind != "worktree" or task.workspace_path != planned:
+                    raise ValueError("swarm workspace plan differs on replay")
         if root is not None and root.status == "blocked":
             if not _activate_root_inline(
                 conn,

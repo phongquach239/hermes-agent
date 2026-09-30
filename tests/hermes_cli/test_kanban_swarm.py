@@ -261,3 +261,107 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert synthesizer.status == "ready"
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("replay_mutation", [None, "workspace_path", "workspace_kind"])
+def test_per_task_worktree_plans_precede_activation_and_replay_is_read_only(
+    tmp_path, monkeypatch, replay_mutation,
+):
+    from pathlib import Path
+    from hermes_cli import kanban_swarm as swarm
+
+    root = tmp_path / "project"
+    root.mkdir()
+    writer = kbc.connect(tmp_path / "board.db")
+    reader = kbc.connect(tmp_path / "board.db")
+    activate = swarm._activate_root_inline
+    activations = []
+    hooks = []
+
+    def observe_activation(conn, root_id, **kwargs):
+        rows = conn.execute("SELECT id,status,workspace_path FROM tasks").fetchall()
+        assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        for row in rows:
+            assert Path(row["workspace_path"]) == root / ".worktrees" / row["id"]
+            assert row["status"] == ("blocked" if row["id"] == root_id else "todo")
+        activations.append(root_id)
+        return activate(conn, root_id, **kwargs)
+
+    monkeypatch.setattr(swarm, "_activate_root_inline", observe_activation)
+    monkeypatch.setattr(kb, "_fire_kanban_lifecycle_hook", lambda *a, **kw: hooks.append(writer.in_transaction))
+    kwargs = dict(
+        goal="Plan isolated workspaces before dispatch",
+        workers=[SwarmWorkerSpec(profile="worker", title="Produce", body="Produce")],
+        verifier_assignee="reviewer", synthesizer_assignee="writer",
+        workspace_kind="worktree", workspace_path=str(root),
+        per_task_worktrees=True, idempotency_key="isolated-workspaces",
+    )
+    try:
+        created = swarm.create_swarm(writer, **kwargs)
+        assert activations == [created.root_id]
+        assert hooks == [False]
+        assert not (root / ".worktrees").exists()  # Planning is not capture/materialization.
+        if replay_mutation:
+            value = str(tmp_path / "foreign") if replay_mutation == "workspace_path" else "scratch"
+            with kb.write_txn(writer):
+                writer.execute(f"UPDATE tasks SET {replay_mutation}=? WHERE id=?", (value, created.worker_ids[0]))
+        before = list(writer.iterdump())
+        if replay_mutation:
+            with pytest.raises(ValueError, match="workspace plan"):
+                swarm.create_swarm(writer, **kwargs)
+        else:
+            assert swarm.create_swarm(writer, **kwargs) == created
+        assert list(writer.iterdump()) == before
+        assert activations == [created.root_id]
+        assert hooks == [False]
+    finally:
+        reader.close()
+        writer.close()
+
+
+@pytest.mark.parametrize("failure", ["later_write", "wrong_kind", "relative_root", "missing_root", "symlink_escape", "prior_run", "foreign_member"])
+def test_per_task_workspace_plan_failure_preserves_existing_board(tmp_path, monkeypatch, failure):
+    import sqlite3
+    from hermes_cli import kanban_swarm as swarm
+
+    root = tmp_path / "project"
+    root.mkdir()
+    conn = kbc.connect(tmp_path / "board.db")
+    hooks = []
+    monkeypatch.setattr(kb, "_fire_kanban_lifecycle_hook", lambda *a, **kw: hooks.append(True))
+    try:
+        foreign = kb.create_task(conn, title="Unrelated existing task", assignee="other",
+                                 initial_status="blocked", workspace_kind="worktree", workspace_path=str(root))
+        if failure == "symlink_escape":
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (root / ".worktrees").symlink_to(outside, target_is_directory=True)
+        if failure in {"prior_run", "foreign_member"}:
+            original_create = swarm._create_swarm_uncommitted
+
+            def staged_with_fault(*args, **kwargs):
+                from dataclasses import replace
+                created = original_create(*args, **kwargs)
+                if failure == "prior_run":
+                    kb._synthesize_ended_run(conn, created.worker_ids[0], outcome="failed", summary="fixture history", metadata={})
+                    return created
+                return replace(created, worker_ids=[foreign])
+
+            monkeypatch.setattr(swarm, "_create_swarm_uncommitted", staged_with_fault)
+        if failure == "later_write":
+            conn.execute("""CREATE TRIGGER reject_verifier_plan BEFORE UPDATE OF workspace_path ON tasks
+                WHEN NEW.assignee='reviewer' BEGIN SELECT RAISE(ABORT, 'injected workspace plan failure'); END""")
+        before = list(conn.iterdump())
+        with pytest.raises((ValueError, sqlite3.IntegrityError), match="workspace|worktree"):
+            swarm.create_swarm(
+                conn, goal="Atomic workspace planning",
+                workers=[SwarmWorkerSpec(profile="worker", title="Produce", body="Produce")],
+                verifier_assignee="reviewer", synthesizer_assignee="writer",
+                workspace_kind="scratch" if failure == "wrong_kind" else "worktree",
+                workspace_path=("relative" if failure == "relative_root" else None if failure == "missing_root" else str(root)),
+                per_task_worktrees=True,
+            )
+        assert list(conn.iterdump()) == before
+        assert hooks == []
+    finally:
+        conn.close()
