@@ -1345,6 +1345,8 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1363,17 +1365,135 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    Bounded owner contract — ``expected_run_id`` / ``expected_claim_lock``
+    ---------------------------------------------------------
+
+    Optional kwargs that bind the helper to the exact attempt the caller
+    captured at claim time. When provided, the helper re-reads the LIVE
+    ``tasks`` and ``task_runs`` rows under its own ``write_txn`` and
+    validates ownership *before* any counter / lifecycle / event / release
+    write:
+
+    * ``tasks.status == 'running'``, no ``tasks.worker_pid``,
+      ``tasks.current_run_id == expected_run_id``,
+      ``tasks.claim_lock == expected_claim_lock``,
+      ``tasks.claim_expires > now``.
+    * ``task_runs`` row at ``expected_run_id`` exists,
+      ``task_runs.task_id == task_id`` (R3-binding repair),
+      ``task_runs.claim_lock == expected_claim_lock``,
+      ``task_runs.status == 'running'``, no outcome, no ``ended_at``,
+      no ``task_runs.worker_pid``, ``task_runs.claim_expires > now``.
+
+    Any mismatch — task disappeared, pointer lost, lock swapped, lease
+    elapsed, run already terminal or spawned, claim flipped, the run's
+    ``task_id`` names a foreign task — the helper returns ``False``
+    WITHOUT writing anything: no counter, no lifecycle, no event, no
+    ``_end_run``, no claim release. Native reclamation
+    (``release_stale_claims`` / ``_reclaim_dangling_run``) owns the
+    cleanup; the helper protects the successor by refusing.
+
+    Partial pair — supplying ONLY ONE of ``expected_run_id`` /
+    ``expected_claim_lock`` is treated as refusal without writes and
+    without ``TypeError`` (a half-bound helper would coerce ``None``
+    through ``int(...)`` and either silently mutate or raise). The
+    bounded contract is all-or-nothing; callers must bind both when they
+    bind either.
+
+    Defaults preserved: when NEITHER ``expected_run_id`` nor
+    ``expected_claim_lock`` is supplied the helper behaves exactly as
+    before — every unrelated caller is unaffected.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
+    # Partial pair guard (R3-binding repair): the bounded contract is
+    # all-or-nothing. A half-bound call (``expected_run_id`` only or
+    # ``expected_claim_lock`` only, or either as an empty/falsy value) is
+    # treated as refusal without writes and without ``TypeError`` — a
+    # half-bound ``int(None)`` coercion would either silently mutate
+    # (claim_lock check skipped) or raise. Refuse BEFORE opening the
+    # write_txn so the helper is honest for any caller that supplies an
+    # incomplete contract. Defaults preserved: when NEITHER field is
+    # supplied the legacy behaviour runs unchanged.
+    if (expected_run_id is None) != (expected_claim_lock is None) \
+            or expected_run_id is not None and (
+                (isinstance(expected_run_id, bool)
+                 or not isinstance(expected_run_id, int)
+                 or int(expected_run_id) <= 0)
+            ) \
+            or expected_claim_lock is not None and (
+                not isinstance(expected_claim_lock, str)
+                or not str(expected_claim_lock).strip()
+            ):
+        return False
     with _kb.write_txn(conn):
+        # Live task read — already required for the rest of the helper.
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries, current_run_id "
+            "SELECT consecutive_failures, status, max_retries, current_run_id, "
+            "       worker_pid, claim_lock, claim_expires "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
+        # Bounded owner recheck — when the caller bound us to a specific
+        # attempt at claim time, validate the LIVE task + run under the
+        # same txn before any mutation. A successor that reclaimed
+        # between the gate read and this helper call short-circuits to
+        # no-op (return False) so the successor's claim_lock / run row /
+        # events are never rewritten.
+        #
+        # Partial pair guard (R3-binding repair): the bounded contract
+        # is all-or-nothing. A half-bound call (``expected_run_id`` only
+        # or ``expected_claim_lock`` only) is treated as refusal without
+        # writes and without ``TypeError`` — a half-bound ``int(None)``
+        # coercion would either silently mutate (claim_lock check is
+        # skipped) or raise. Returning False keeps the helper honest for
+        # any caller that supplies an incomplete contract.
+        expected_pair_supplied = (
+            expected_run_id is not None and expected_claim_lock is not None
+        )
+        if expected_pair_supplied:
+            now = int(time.time())
+            live_run_id = row["current_run_id"]
+            live_lock = row["claim_lock"]
+            live_expires = row["claim_expires"]
+            if (
+                row["status"] != "running"
+                or row["worker_pid"] is not None
+                or live_run_id is None
+                or int(live_run_id) != int(expected_run_id)
+                or live_lock != expected_claim_lock
+                or live_expires is None
+                or int(live_expires) <= now
+            ):
+                return False
+            run_row = conn.execute(
+                "SELECT task_id, claim_lock, status, outcome, ended_at, worker_pid, claim_expires "
+                "FROM task_runs WHERE id = ?", (int(expected_run_id),),
+            ).fetchone()
+            if run_row is None:
+                return False
+            # R3-binding repair — refuse when ``task_runs.task_id`` names
+            # a foreign task. Independent of claim_lock (the latter is
+            # normally unique across the board, but a manual SQL rewrite
+            # or DB restore can re-point ``current_run_id`` at a foreign
+            # run). Same all-or-nothing contract as the rest of the
+            # recheck: no counter, no lifecycle, no event, no ``_end_run``,
+            # no claim release.
+            if run_row["task_id"] != task_id:
+                return False
+            run_expires = run_row["claim_expires"]
+            if (
+                run_row["claim_lock"] != expected_claim_lock
+                or run_row["status"] != "running"
+                or run_row["outcome"] is not None
+                or run_row["ended_at"] is not None
+                or run_row["worker_pid"] is not None
+                or run_expires is None
+                or int(run_expires) <= now
+            ):
+                return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1456,21 +1576,167 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_task_id: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
+) -> bool:
     """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
     persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
-    whose bare-PID kill authority a new spawn must not inherit."""
-    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    whose bare-PID kill authority a new spawn must not inherit.
+
+    Bounded owner contract — ``expected_task_id`` / ``expected_run_id`` / ``expected_claim_lock``
+    --------------------------------------------------------------------------
+
+    Optional kwargs that bind the primitive to the exact attempt the caller captured at
+    spawn time. When ALL THREE are supplied, the helper re-reads the LIVE ``tasks`` and
+    ``task_runs`` rows under its own ``write_txn`` and validates ownership *before* any
+    PID / fingerprint / ``spawned`` event write — the same fencing the failure helper
+    applies under R3-binding repair:
+
+    * ``tasks.id == expected_task_id``,
+      ``tasks.status == 'running'``, ``tasks.worker_pid IS NULL``,
+      ``tasks.current_run_id == expected_run_id``,
+      ``tasks.claim_lock == expected_claim_lock``,
+      ``tasks.claim_expires > now``.
+    * ``task_runs`` row at ``expected_run_id`` exists,
+      ``task_runs.task_id == expected_task_id``,
+      ``task_runs.claim_lock == expected_claim_lock``,
+      ``task_runs.status == 'running'``,
+      ``task_runs.outcome IS NULL``, ``task_runs.ended_at IS NULL``,
+      ``task_runs.worker_pid IS NULL``,
+      ``task_runs.claim_expires > now``.
+
+    Any mismatch — task disappeared, pointer lost, lock swapped, lease elapsed, run
+    already terminal / spawned, the run's ``task_id`` names a foreign task — the helper
+    returns ``False`` WITHOUT writing anything: no PID, no fingerprint, no
+    ``spawned`` event, no claim release. The caller is responsible for not
+    publishing ``DispatchResult.spawned``, not firing the ``on_kanban_worker_spawned``
+    hook, and not incrementing the per-profile cap when this helper refuses.
+
+    Partial / malformed pair — supplying fewer than ALL THREE fields, supplying
+    empty / non-positive values, or supplying a non-string ``expected_claim_lock`` is
+    treated as refusal without writes and without ``TypeError``. The bounded contract
+    is all-or-nothing; a half-bound helper would coerce ``None`` through ``int(...)``
+    and either silently mutate or raise. Defaults preserved: when NO ``expected_*``
+    kwarg is supplied the helper behaves exactly as before — every unrelated
+    caller (the unit tests that call ``kbd._set_worker_pid(conn, tid, pid)``
+    directly, ``reap_terminal_workers`` cleanup, etc.) is unaffected.
+
+    The late-return race this repairs: ``spawn_fn`` returns AFTER ``release_stale_claims``
+    + a successor ``claim_task`` has already moved the live ``tasks.current_run_id``
+    to a fresh run row owned by someone else. Writing ``tasks.worker_pid`` keyed
+    only on ``task_id`` and then reading ``_current_run_id`` post-update would
+    stamp the late PID and ``spawned`` event onto the successor's run. The expected
+    pair rejects that exactly the same way the failure helper rejects a foreign
+    ``task_runs.task_id``.
+    """
+    pid = int(pid)
+    # Partial / malformed pair guard (R4-late-return repair): the bounded
+    # contract is all-or-nothing on ALL THREE fields. ANY of the three being
+    # supplied while another is missing is treated as refusal without
+    # writes and without ``TypeError`` BEFORE opening the write_txn, so the
+    # primitive is honest for any caller that supplies an incomplete
+    # contract. The malformed fields (empty / non-positive run_id, empty /
+    # non-string claim_lock or task_id) are also refused when the contract
+    # is fully bound. Defaults preserved: when NO ``expected_*`` kwarg is
+    # supplied the legacy behaviour runs unchanged — every unit test that
+    # calls ``kbd._set_worker_pid(conn, tid, pid)`` directly is unaffected.
+    expected_fields_present = (
+        expected_task_id is not None,
+        expected_run_id is not None,
+        expected_claim_lock is not None,
+    )
+    expected_pair_supplied = all(expected_fields_present)
+    expected_pair_partial = any(expected_fields_present) and not expected_pair_supplied
+    if expected_pair_partial:
+        return False
+    if expected_pair_supplied and (
+        not isinstance(expected_task_id, str)
+        or not str(expected_task_id).strip()
+        or (
+            isinstance(expected_run_id, bool)
+            or not isinstance(expected_run_id, int)
+            or int(expected_run_id) <= 0
+        )
+        or not isinstance(expected_claim_lock, str)
+        or not str(expected_claim_lock).strip()
+    ):
+        return False
+    # R4-target repair: when the bounded contract is supplied, the
+    # positional ``task_id`` argument MUST match ``expected_task_id``. A
+    # caller that passes ``task_id='other-task'`` with ``expected_task_id``
+    # ``='gate-review'`` previously validated the gate-review row but
+    # mutated the other-task row, allowing a valid A authority to stamp a
+    # foreign B. Refuse BEFORE opening the write_txn so neither row is
+    # touched.
+    if expected_pair_supplied and task_id != expected_task_id:
+        return False
+    started_at = _process_fingerprint(pid) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
+        if expected_pair_supplied:
+            now = int(time.time())
+            task_row = conn.execute(
+                "SELECT id, status, current_run_id, worker_pid, claim_lock, claim_expires "
+                "FROM tasks WHERE id = ?",
+                (str(expected_task_id),),
+            ).fetchone()
+            if task_row is None:
+                return False
+            if (
+                task_row["id"] != expected_task_id
+                or task_row["status"] != "running"
+                or task_row["worker_pid"] is not None
+                or task_row["current_run_id"] is None
+                or int(task_row["current_run_id"]) != int(expected_run_id)
+                or task_row["claim_lock"] != expected_claim_lock
+                or task_row["claim_expires"] is None
+                or int(task_row["claim_expires"]) <= now
+            ):
+                return False
+            run_row = conn.execute(
+                "SELECT task_id, claim_lock, status, outcome, ended_at, worker_pid, claim_expires "
+                "FROM task_runs WHERE id = ?",
+                (int(expected_run_id),),
+            ).fetchone()
+            if run_row is None:
+                return False
+            # R3-binding repair (same as the failure helper): refuse when
+            # ``task_runs.task_id`` names a foreign task. Independent of
+            # claim_lock (the latter is normally unique across the board,
+            # but a manual SQL rewrite or DB restore can re-point
+            # ``current_run_id`` at a foreign run). Same all-or-nothing
+            # contract as the rest of the recheck.
+            if run_row["task_id"] != expected_task_id:
+                return False
+            if (
+                run_row["claim_lock"] != expected_claim_lock
+                or run_row["status"] != "running"
+                or run_row["outcome"] is not None
+                or run_row["ended_at"] is not None
+                or run_row["worker_pid"] is not None
+                or run_row["claim_expires"] is None
+                or int(run_row["claim_expires"]) <= now
+            ):
+                return False
         conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                     (int(pid), started_at, task_id))
-        run_id = _kb._current_run_id(conn, task_id)
+                     (pid, started_at, task_id))
+        run_id = (
+            int(expected_run_id)
+            if expected_pair_supplied
+            else _kb._current_run_id(conn, task_id)
+        )
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                         (int(pid), started_at, run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+                         (pid, started_at, run_id))
+        _kb._append_event(conn, task_id, "spawned", {"pid": pid, "started_at": started_at}, run_id=run_id)
+    return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1988,6 +2254,123 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _check_pre_spawn_authority(
+    conn: sqlite3.Connection, claimed: Task,
+) -> Optional[tuple[str, Optional[str]]]:
+    """Verify the fresh current-claim run is still owned by ``claimed`` and
+    is ready to spawn — fail closed on every form of stale / terminal /
+    already-spawned / lost-pointer attempt.
+
+    Returns ``None`` when the spawn may proceed, or ``(reason, current_lock)``
+    when the gate must refuse. ``current_lock`` is the value of
+    ``tasks.claim_lock`` at the moment of the check; the dispatcher uses
+    refusal reasons to decide between a silent refusal (no DB write at all
+    — leave reclamation to native lifecycle) and a native failure close
+    on the exact attempt we still own.
+
+    Refusal-reason taxonomy:
+
+    * ``current_pointer_lost`` — ``tasks.current_run_id`` no longer points at
+      the run id we originally claimed. Another path reclaimed the task or
+      cleared the pointer; this attempt is no longer current.
+    * ``task_disappeared`` / ``task_status_not_running`` /
+      ``task_already_spawned`` / ``task_expired`` — the live ``tasks`` row
+      does not match the (status='running', no worker_pid, claim_lock ==
+      claimed.claim_lock, claim_expires > now) triple we need.
+    * ``claim_changed`` / ``task_claim_lock_mismatch`` — a successor now
+      owns ``tasks.claim_lock``. The successor's claim_lock is the
+      ``current_lock`` returned.
+    * ``run_row_missing`` / ``run_lock_mismatch`` /
+      ``run_status_not_running`` / ``run_already_spawned`` / ``run_ended`` /
+      ``run_expired`` / ``run_lock_changed`` / ``run_owned_by_other_task``
+      — the ``task_runs`` row that ``tasks.current_run_id`` points at is
+      no longer ours. ``run_owned_by_other_task`` binds ``task_runs.task_id``
+      to ``claimed.id``: a run row whose ``task_id`` column names a
+      different task (operator-side repair, manual SQL, DB restore) cannot
+      be retried from this attempt. Refuse silently — native reclamation
+      owns the cleanup.
+    * ``missing_authority_evidence`` — we still own the task AND the run,
+      but ``workspace_start_commit`` / ``workspace_start_tree`` /
+      ``workspace_authority_sha256`` is incomplete. The dispatcher closes
+      this attempt through the native failure lifecycle; the caller passes
+      the exact (run_id, claim_lock) it owns so the helper's recheck sees a
+      live current owner.
+
+    For non-worktree rows the caller short-circuits before reaching here.
+
+    The check is a strict read; nothing is mutated on refusal. Every form
+    of stale / terminal / already-spawned / lost-pointer refusal is silent
+    (no DB write), so a successor's claim_lock, a terminal run's outcome,
+    and a freshly-claimed next attempt are never rewritten by this gate.
+    """
+    if claimed.current_run_id is None:
+        return ("missing_current_run", None)
+    now = int(time.time())
+    # Live task row: status running, no worker_pid, current_run_id points
+    # at the run id we originally claimed, claim_lock matches and lease
+    # strictly in the future.
+    task_row = conn.execute(
+        "SELECT status, current_run_id, worker_pid, claim_lock, claim_expires "
+        "FROM tasks WHERE id=?",
+        (claimed.id,),
+    ).fetchone()
+    if task_row is None:
+        return ("task_disappeared", None)
+    task_status = task_row["status"]
+    task_run_id = task_row["current_run_id"]
+    task_worker_pid = task_row["worker_pid"]
+    task_lock = task_row["claim_lock"]
+    task_expires = task_row["claim_expires"]
+    if task_status != "running":
+        return ("task_status_not_running", task_lock)
+    if task_worker_pid is not None:
+        return ("task_already_spawned", task_lock)
+    if task_run_id is None or int(task_run_id) != int(claimed.current_run_id):
+        return ("current_pointer_lost", task_lock)
+    if task_lock is None or task_lock != claimed.claim_lock:
+        return ("claim_changed", task_lock)
+    if task_expires is None or int(task_expires) <= now:
+        return ("task_expired", task_lock)
+    # Live run row: bound to claim_lock, bound to ``claimed.id`` via
+    # ``task_runs.task_id``, status running, no outcome, no ended_at, no
+    # worker_pid, lease strictly in the future, and the complete
+    # authority triple populated.
+    run_row = conn.execute(
+        "SELECT task_id, claim_lock, outcome, ended_at, worker_pid, claim_expires, "
+        "       status, workspace_start_commit, workspace_start_tree, "
+        "       workspace_authority_sha256 "
+        "FROM task_runs WHERE id=?",
+        (int(claimed.current_run_id),),
+    ).fetchone()
+    if run_row is None:
+        return ("run_row_missing", task_lock)
+    # R3-binding repair — refuse silently when ``task_runs.task_id`` names
+    # a different task. Independent of claim_lock (the latter is
+    # normally unique across the board, but a manual SQL rewrite or DB
+    # restore can re-point ``current_run_id`` at a foreign run). No DB
+    # write on refusal; native reclamation owns the cleanup.
+    if run_row["task_id"] != claimed.id:
+        return ("run_owned_by_other_task", task_lock)
+    if run_row["claim_lock"] != claimed.claim_lock:
+        return ("run_lock_changed", task_lock)
+    if run_row["status"] != "running":
+        return ("run_status_not_running", task_lock)
+    if run_row["outcome"] is not None:
+        return ("run_ended", task_lock)
+    if run_row["ended_at"] is not None:
+        return ("run_ended", task_lock)
+    if run_row["worker_pid"] is not None:
+        return ("run_already_spawned", task_lock)
+    run_expires = run_row["claim_expires"]
+    if run_expires is None or int(run_expires) <= now:
+        return ("run_expired", task_lock)
+    if not (run_row["workspace_start_commit"]
+            and run_row["workspace_start_tree"]
+            and run_row["workspace_authority_sha256"]):
+        return ("missing_authority_evidence", task_lock)
+    return None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2062,23 +2445,103 @@ def _dispatch_lane_task(
         if _record_task_failure(
             conn, claimed.id, f"workspace: {exc}",
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            expected_run_id=int(claimed.current_run_id) if claimed.current_run_id is not None else None,
+            expected_claim_lock=claimed.claim_lock,
         ):
             result.auto_blocked.append(claimed.id)
         return False
-    _kbw.set_workspace_path(conn, claimed.id, str(workspace))
-    if claimed.workspace_kind == "worktree":
-        _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+    try:
+        _kbw.set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+    except Exception as exc:
+        # set_workspace_path's own try/except only swallows the
+        # capture_workspace_authority call. A stamp-write failure on the
+        # ``task_runs`` row inside its update txn is not wrapped — and the
+        # gate below would otherwise see NULL authority columns and refuse
+        # anyway, but the exception would have propagated here first.
+        # Treat it like the workspace-prep failure above: native failure
+        # lifecycle on the SAME owned attempt (the helper re-checks live
+        # task+run under its own txn; a successor that reclaimed between
+        # the gate read and this call short-circuits to no-op), no rewrite
+        # of any successor.
+        if _record_task_failure(
+            conn, claimed.id, f"workspace_authority: {exc}",
+            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            expected_run_id=int(claimed.current_run_id) if claimed.current_run_id is not None else None,
+            expected_claim_lock=claimed.claim_lock,
+        ):
+            result.auto_blocked.append(claimed.id)
+        return False
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    # Fail-closed pre-spawn gate for worktree rows: the dispatcher must not
+    # spawn a worker when the fresh current-claim run lacks a complete
+    # workspace_start_commit/tree/authority_sha256 triple, or when any of
+    # the live task/run state has drifted (current_run pointer lost,
+    # successor reclaimed, TTL elapsed, run already terminal / spawned,
+    # worker pid already set on either side, claim_lock mismatched on the
+    # run row). Non-worktree rows (scratch, dir) keep the legacy best-effort
+    # behavior — a non-git workspace legitimately has NULL authority cols.
+    if claimed.workspace_kind == "worktree":
+        refusal = _check_pre_spawn_authority(conn, claimed)
+        if refusal is not None:
+            reason, current_lock = refusal
+            # Every refusal reason except ``missing_authority_evidence``
+            # means we no longer own the attempt (a successor reclaimed,
+            # the lease elapsed, the run was ended/spawned elsewhere, or
+            # the current_run pointer was lost). Native lifecycle owns
+            # reclamation; the gate must NOT touch task_runs, events, or
+            # last_failure_error here, and must NOT close the run through
+            # a parallel terminal path. Silent refusal.
+            if reason == "missing_authority_evidence":
+                # We still own the task AND the run; the run's authority
+                # triple is incomplete. Close the attempt through the
+                # native failure lifecycle; the helper re-checks the live
+                # task+run under its own txn so a successor that reclaimed
+                # between this read and the helper's read short-circuits
+                # to no-op (defence in depth — gate already validated
+                # ownership just now).
+                if _record_task_failure(
+                    conn, claimed.id, f"workspace_authority: {reason}",
+                    outcome="spawn_failed", failure_limit=failure_limit,
+                    release_claim=True, end_run=True,
+                    expected_run_id=int(claimed.current_run_id) if claimed.current_run_id is not None else None,
+                    expected_claim_lock=claimed.claim_lock,
+                ):
+                    result.auto_blocked.append(claimed.id)
+            return False
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Capture the ORIGINAL claim identity BEFORE invoking ``spawn_fn`` so a
+    # late-return callback can be fenced against a successor that reclaimed
+    # during the spawn (native TTL release + successor claim on a second
+    # connection). The expected identity is what every success-publication
+    # path (``_set_worker_pid``, no-PID branch, hook fire, ``result.spawned``)
+    # has to match before any DB write / event / counter increment fires.
+    expected_task_id = str(claimed.id)
+    expected_run_id = (
+        int(claimed.current_run_id) if claimed.current_run_id is not None else None
+    )
+    expected_claim_lock = claimed.claim_lock
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
-        if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
-        # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
-        _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
+        accepted = _finalize_spawn_result(
+            conn, claimed, str(workspace), board, pid,
+            expected_task_id=expected_task_id,
+            expected_run_id=expected_run_id,
+            expected_claim_lock=expected_claim_lock,
+        )
+        if not accepted:
+            # Silent refusal: the spawn callback returned AFTER ownership
+            # moved to a successor (native TTL release + fresh ``claim_task``
+            # on a sibling connection, or the live ``tasks.claim_lock`` /
+            # ``current_run_id`` was rewritten some other way). The dispatched
+            # worker is NOT ours; do not append to ``result.spawned``, do not
+            # fire ``on_kanban_worker_spawned``, do not consume a per-profile
+            # slot. Native lifecycle owns the successor's bookkeeping.
+            return False
         # consecutive_failures is deliberately NOT reset here: resetting on
         # spawn would let a task that keeps timing out loop forever. Cleared
         # only on successful completion (complete_task).
@@ -2097,9 +2560,167 @@ def _dispatch_lane_task(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
             infrastructure=infrastructure,
+            expected_run_id=expected_run_id,
+            expected_claim_lock=expected_claim_lock,
         ):
             result.auto_blocked.append(claimed.id)
         return False
+
+
+def _finalize_spawn_result(
+    conn: sqlite3.Connection,
+    claimed: Any,
+    workspace: str,
+    board: Optional[str],
+    pid: Optional[int],
+    *,
+    expected_task_id: str,
+    expected_run_id: Optional[int],
+    expected_claim_lock: Optional[str],
+) -> bool:
+    """Fence the post-spawn callback against a successor that reclaimed the
+    task during ``spawn_fn``. Returns True when the spawn is owned by THIS
+    attempt and the result may be published (``result.spawned``, hook, per-
+    profile cap); False on refusal, with no DB writes, no event, no hook.
+
+    Two late-return shapes are fenced:
+
+    * **Late PID** (``pid`` truthy). ``_set_worker_pid`` re-reads the live
+      ``tasks`` + ``task_runs`` rows under its own ``write_txn`` and refuses
+      when the live state no longer matches ``expected_task_id`` /
+      ``expected_run_id`` / ``expected_claim_lock``. When ``_set_worker_pid``
+      refuses, the late PID is a stale callback result: attempt a
+      fingerprint-checked host-local termination of the returned PID using
+      the ORIGINAL claim identity (NOT the live ``tasks.claim_lock``, which
+      a successor has rewritten by now). Never signal a bare / unverified /
+      recycled PID, and never rewrite any successor / historical row. If
+      cleanup cannot be safely verified, log an explicit scoped refusal
+      rather than claim ``terminated``.
+    * **Late no-PID** (``pid`` is ``0`` or ``None``). The helper re-reads
+      the live task + run under its own short ``write_txn`` and refuses
+      when ownership has moved on. On refusal the dispatcher must NOT
+      publish ``DispatchResult.spawned`` and must NOT fire the spawned
+      hook for a successor.
+
+    ``_fire_worker_spawned_hook`` is only called when ownership is still
+    ours and the PID (when reported) has been durably persisted.
+
+    No transaction is held while waiting for ``spawn_fn`` — the caller's
+    own helper opens a fresh ``write_txn`` for each ownership recheck so
+    the live state is read under the same lock fence as the writes it
+    guards.
+    """
+    # Fence the no-PID branch: a slow ``spawn_fn`` that returned ``0`` /
+    # ``None`` AFTER ``release_stale_claims`` + a successor ``claim_task``
+    # would otherwise publish a false-positive spawn (``result.spawned``
+    # appended, hook fired, per-profile slot consumed). Re-check live
+    # ownership in the same fence as the would-be PID write; on mismatch
+    # refuse silently.
+    if not pid:
+        with _kb.write_txn(conn):
+            task_row = conn.execute(
+                "SELECT status, current_run_id, worker_pid, claim_lock, claim_expires "
+                "FROM tasks WHERE id = ?",
+                (expected_task_id,),
+            ).fetchone()
+            if task_row is None:
+                return False
+            now = int(time.time())
+            if (
+                task_row["status"] != "running"
+                or task_row["worker_pid"] is not None
+                or task_row["current_run_id"] is None
+                or int(task_row["current_run_id"]) != int(expected_run_id or 0)
+                or task_row["claim_lock"] != expected_claim_lock
+                or task_row["claim_expires"] is None
+                or int(task_row["claim_expires"]) <= now
+            ):
+                return False
+            run_row = conn.execute(
+                "SELECT task_id, claim_lock, status, outcome, ended_at, worker_pid, claim_expires "
+                "FROM task_runs WHERE id = ?",
+                (int(expected_run_id),),
+            ).fetchone()
+            if run_row is None:
+                return False
+            if (
+                run_row["task_id"] != expected_task_id
+                or run_row["claim_lock"] != expected_claim_lock
+                or run_row["status"] != "running"
+                or run_row["outcome"] is not None
+                or run_row["ended_at"] is not None
+                or run_row["worker_pid"] is not None
+                or run_row["claim_expires"] is None
+                or int(run_row["claim_expires"]) <= now
+            ):
+                return False
+        # Ownership intact, no PID reported: legacy fire-and-forget shape.
+        # Fires AFTER the PID write would have committed (none here). Hook
+        # reads ``_current_run_id`` post-write; with the no-PID path the
+        # hook payload's ``worker_pid`` is ``None`` and ``run_id`` is the
+        # expected original one we just verified (so a later reclaim
+        # cannot re-attribute it).
+        _kb._fire_worker_spawned_hook(
+            conn, claimed, workspace, pid, board=board,
+            expected_run_id=expected_run_id,
+        )
+        return True
+
+    pid_int = int(pid)
+    # R4-cleanup repair: when ``_set_worker_pid`` refuses (a late-PID
+    # return whose ownership moved on), there is NO spawn-time
+    # fingerprint/handle in the existing callback result — the original
+    # worker never reported back. A fingerprint read NOW against the
+    # returned PID number only observes today's occupant of that number
+    # (recycled PID, foreign process), so it cannot witness the original
+    # spawn's identity. Refuse cleanup, do NOT signal, and log an
+    # explicit scoped warning. The existing helper is still consulted
+    # for ``terminated`` accounting, fed the ``UNVERIFIED_WORKER_FINGERPRINT``
+    # sentinel so its own never-signal rule fires (a dead PID is
+    # ``terminated=True``; a live unknown PID is ``signal_refused=True``,
+    # never signalled).
+    accepted = _set_worker_pid(
+        conn, claimed.id, pid_int,
+        expected_task_id=expected_task_id,
+        expected_run_id=expected_run_id,
+        expected_claim_lock=expected_claim_lock,
+    )
+    if not accepted:
+        # Late PID return: ownership has moved on. ``_set_worker_pid``
+        # already refused without writing anything. Do NOT trust a
+        # freshly-read fingerprint of the returned PID — that read
+        # observes the current PID occupant, not the original worker.
+        # Pass ``UNVERIFIED_WORKER_FINGERPRINT`` so
+        # ``_terminate_reclaimed_worker`` never signals the live PID
+        # (the helper's own fingerprint / UNVERIFIED / recycled rules
+        # are the only kill authority on the host). Always log an
+        # explicit refusal — the bare PID is not ours.
+        try:
+            termination = _terminate_reclaimed_worker(
+                pid_int, expected_claim_lock, started_at=UNVERIFIED_WORKER_FINGERPRINT,
+            )
+            _kb._log.warning(
+                "kanban dispatcher: late spawn return for task %s (pid %s) "
+                "refused cleanup — no spawn-time fingerprint/handle for the "
+                "original worker; successor remains in place, no DB rewrite",
+                expected_task_id, pid_int,
+            )
+        except Exception:
+            _kb._log.warning(
+                "kanban dispatcher: late spawn return cleanup raised for task %s "
+                "(pid %s); leaving untouched (no DB rewrite)",
+                expected_task_id, pid_int,
+                exc_info=True,
+            )
+        return False
+    # Fires AFTER the PID is durably persisted (now ownership-verified),
+    # carrying the original committed run id so the spawned hook is not
+    # re-attributed to a successor that reclaimed after publication.
+    _kb._fire_worker_spawned_hook(
+        conn, claimed, workspace, pid_int, board=board,
+        expected_run_id=expected_run_id,
+    )
+    return True
 
 
 def _apply_default_assignee(
