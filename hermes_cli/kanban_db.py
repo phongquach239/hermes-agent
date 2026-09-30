@@ -191,14 +191,28 @@ def _kanban_observer_consumed(event: str) -> bool:
 def _fire_worker_spawned_hook(
     conn: sqlite3.Connection, task: "Task", workspace_path: str, pid: Optional[int], *,
     board: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> None:
-    """``on_kanban_worker_spawned`` AFTER the PID is durably persisted; best-effort."""
+    """``on_kanban_worker_spawned`` AFTER the PID is durably persisted; best-effort.
+
+    ``expected_run_id`` (R4-hook repair): when supplied, the hook fires with the
+    ORIGINAL committed run id captured at claim time, NOT a fresh
+    ``_current_run_id`` re-read after publication. A late reclaim on a sibling
+    connection between the publication commit and this call would otherwise
+    re-attribute the historical spawn to the successor's run. Defaults to
+    ``None`` — the legacy read against the LIVE ``tasks.current_run_id`` — so
+    every unrelated caller (existing tests, observers) is unaffected.
+    """
     if not _kanban_observer_consumed("on_kanban_worker_spawned"):
         return
     try:
+        if expected_run_id is not None:
+            run_id: Optional[int] = int(expected_run_id)
+        else:
+            run_id = _current_run_id(conn, task.id)
         _fire_kanban_lifecycle_hook(
             "on_kanban_worker_spawned", task.id, board=board or get_current_board(),
-            assignee=task.assignee, run_id=_current_run_id(conn, task.id),
+            assignee=task.assignee, run_id=run_id,
             worker_pid=int(pid) if pid else None, workspace_path=str(workspace_path),
         )
     except Exception as exc:  # pragma: no cover - defensive
