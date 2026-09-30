@@ -122,8 +122,17 @@ def test_capture_workspace_authority_stamps_row_with_sha256(tmp_path: str) -> No
             conn.close()
 
 
-def test_claim_task_populates_workspace_start_columns(tmp_path: str) -> None:
-    """claim_task writes workspace_start_commit/tree/authority_sha256 into task_runs."""
+def test_claim_task_does_not_inherit_stale_task_level_authority(tmp_path: str) -> None:
+    """Claim establishes ownership, not start evidence. A stale
+    ``task_workspace_authority`` row from a prior capture MUST NOT be copied
+    into the new ``task_runs`` row; the run starts unprepared and the
+    dispatcher's later ``set_workspace_path`` stamps the fresh capture.
+
+    Reproduction for F02: a previous attempt captured an early Git commit;
+    a later attempt created a new commit and was claimed with a still-stale
+    authority row in place. The new run's ``workspace_start_*`` must stay
+    NULL until the dispatcher captures fresh state.
+    """
     import hermes_cli.kanban_db as kb
     import hermes_cli.kanban_db_workspace as kdw
 
@@ -133,26 +142,198 @@ def test_claim_task_populates_workspace_start_columns(tmp_path: str) -> None:
         conn = _open_test_db(db_path)
         try:
             conn.execute(
-                "INSERT INTO tasks(id, title, status, workspace_kind, workspace_path, created_at, assignee) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("task1", "test", "ready", "scratch", repo_root, 1234567890, "test-profile"),
+                "INSERT INTO tasks(id, title, status, workspace_kind, created_at, assignee) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("task1", "test", "ready", "scratch", 1234567890, "test-profile"),
             )
             conn.commit()
-            kdw.set_workspace_path(conn, "task1", repo_root)
-            kdw.set_branch_name(conn, "task1", "main")
+
+            # 1. Simulate an earlier attempt that stamped a task-level
+            #    authority row from an OLDER commit.
+            old_commit_proc = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            )
+            old_commit = old_commit_proc.stdout.strip()
+            old_tree_proc = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", f"{old_commit}^{{tree}}"],
+                capture_output=True, text=True, check=True,
+            )
+            old_tree = old_tree_proc.stdout.strip()
+            old_payload = f"task1\n{old_commit}\n{old_tree}\nearlier-capture\nmain"
+            old_sha = hashlib.sha256(old_payload.encode("utf-8")).hexdigest()
+            with kb.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO task_workspace_authority("
+                    "task_id, base_commit, base_tree, authority_sha256, "
+                    "source, branch_name, captured_at, captured_by"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("task1", old_commit, old_tree, old_sha,
+                     "earlier-capture", "main", "2026-01-01T00:00:00+00:00",
+                     "prior-attempt"),
+                )
+
+            # 2. Create a NEW commit on disk so any fresh capture diverges.
+            (Path(repo_root) / "f.txt").write_text("new content for fresh attempt")
+            subprocess.run(
+                ["git", "-C", repo_root, "commit", "-am", "new", "-q"], check=True,
+            )
+            new_commit_proc = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            )
+            new_commit = new_commit_proc.stdout.strip()
+            assert new_commit != old_commit, "test setup: new commit must differ"
+
+            # 3. Claim the task. The task-level authority row is STILL the
+            #    stale one from step 1.
             claimed = kb.claim_task(conn, "task1", ttl_seconds=300)
             assert claimed is not None
 
             run_row = conn.execute(
                 "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
-                "FROM task_runs WHERE task_id = ?",
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
                 ("task1",),
             ).fetchone()
             assert run_row is not None
-            assert run_row["workspace_start_commit"] is not None
-            assert run_row["workspace_start_tree"] is not None
+            # Claim must NOT inherit the stale authority — the new run starts
+            # unprepared (NULL). This is the regression for F02.
+            assert run_row["workspace_start_commit"] is None
+            assert run_row["workspace_start_tree"] is None
+            assert run_row["workspace_authority_sha256"] is None
+
+            # 4. Native dispatch path: set_workspace_path now stamps a fresh
+            #    capture from the CURRENT commit/tree, and only the current
+            #    pre-spawn claim receives the backfill.
+            kdw.set_workspace_path(conn, "task1", repo_root)
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                ("task1",),
+            ).fetchone()
+            assert run_row["workspace_start_commit"] == new_commit, (
+                "set_workspace_path must capture the CURRENT commit, not the stale row"
+            )
+            new_tree_proc = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", f"{new_commit}^{{tree}}"],
+                capture_output=True, text=True, check=True,
+            )
+            new_tree = new_tree_proc.stdout.strip()
+            assert run_row["workspace_start_tree"] == new_tree
+            new_payload = f"task1\n{new_commit}\n{new_tree}\ndispatch.set_workspace_path\n"
+            new_sha = hashlib.sha256(new_payload.encode("utf-8")).hexdigest()
+            assert run_row["workspace_authority_sha256"] == new_sha
+            assert run_row["workspace_authority_sha256"] != old_sha
+        finally:
+            conn.close()
+
+
+def test_review_claim_does_not_inherit_stale_authority(tmp_path: str) -> None:
+    """``claim_review_task`` shares ``_claim_and_open_run``; the review run
+    must also begin unprepared even when a stale task-level row exists."""
+    import hermes_cli.kanban_db as kb
+    import hermes_cli.kanban_db_workspace as kdw
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = _build_git_repo(tmp)
+        db_path = os.path.join(tmp, "test.db")
+        conn = _open_test_db(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO tasks(id, title, status, workspace_kind, created_at, assignee) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("task1", "test", "review", "scratch", 1234567890, "test-profile"),
+            )
+            conn.commit()
+            # Stamp a stale row from a prior capture.
+            old_commit = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            old_tree = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", f"{old_commit}^{{tree}}"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            old_payload = f"task1\n{old_commit}\n{old_tree}\nstale\nmain"
+            old_sha = hashlib.sha256(old_payload.encode("utf-8")).hexdigest()
+            with kb.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO task_workspace_authority("
+                    "task_id, base_commit, base_tree, authority_sha256, "
+                    "source, branch_name, captured_at, captured_by"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("task1", old_commit, old_tree, old_sha,
+                     "stale", "main", "2026-01-01T00:00:00+00:00", "prior"),
+                )
+
+            claimed = kb.claim_review_task(conn, "task1", ttl_seconds=300)
+            assert claimed is not None
+
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                ("task1",),
+            ).fetchone()
+            assert run_row["workspace_start_commit"] is None
+            assert run_row["workspace_start_tree"] is None
+            assert run_row["workspace_authority_sha256"] is None
+
+            # Now the dispatcher captures fresh state.
+            kdw.set_workspace_path(conn, "task1", repo_root)
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                ("task1",),
+            ).fetchone()
+            assert run_row["workspace_start_commit"] == old_commit
+            assert run_row["workspace_authority_sha256"] != old_sha or run_row["workspace_authority_sha256"] is None
+            # set_workspace_path overwrites task-level row, so the digest
+            # reflects the dispatch source label.
             assert run_row["workspace_authority_sha256"] is not None
-            assert len(run_row["workspace_authority_sha256"]) == 64
+        finally:
+            conn.close()
+
+
+def test_claim_with_no_authority_cache_starts_null(tmp_path: str) -> None:
+    """When there is no ``task_workspace_authority`` row at all (legacy or
+    non-git workspace), claim still must not invent authority values —
+    the run starts NULL, and a non-git ``set_workspace_path`` keeps it NULL."""
+    import hermes_cli.kanban_db as kb
+    import hermes_cli.kanban_db_workspace as kdw
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "test.db")
+        conn = _open_test_db(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO tasks(id, title, status, workspace_kind, created_at, assignee) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("task1", "test", "ready", "scratch", 1234567890, "test-profile"),
+            )
+            conn.commit()
+            claimed = kb.claim_task(conn, "task1", ttl_seconds=300)
+            assert claimed is not None
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                ("task1",),
+            ).fetchone()
+            assert run_row["workspace_start_commit"] is None
+            assert run_row["workspace_start_tree"] is None
+            assert run_row["workspace_authority_sha256"] is None
+
+            # Non-git workspace path leaves authority NULL too.
+            non_git = os.path.join(tmp, "no-git")
+            os.makedirs(non_git, exist_ok=True)
+            kdw.set_workspace_path(conn, "task1", non_git)
+            run_row = conn.execute(
+                "SELECT workspace_start_commit, workspace_start_tree, workspace_authority_sha256 "
+                "FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                ("task1",),
+            ).fetchone()
+            assert run_row["workspace_start_commit"] is None
+            assert run_row["workspace_start_tree"] is None
+            assert run_row["workspace_authority_sha256"] is None
         finally:
             conn.close()
 

@@ -2274,6 +2274,11 @@ def _claim_and_open_run(
         "SELECT assignee, max_runtime_seconds, current_step_key "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
+    # Claim establishes ownership, not start evidence. The new run begins
+    # unprepared (NULL authority columns); the dispatcher's later
+    # ``set_workspace_path`` stamps the fresh capture via the guarded Core
+    # setter. Reading ``task_workspace_authority`` here would inherit a
+    # stale row from any prior attempt under the same task_id.
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
@@ -2281,14 +2286,11 @@ def _claim_and_open_run(
             claim_lock, claim_expires, max_runtime_seconds,
             workspace_start_commit, workspace_start_tree, workspace_authority_sha256,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, NULL, NULL, NULL, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None,
-            _resolve_workspace_authority(conn, task_id, "start_commit"),
-            _resolve_workspace_authority(conn, task_id, "start_tree"),
-            _resolve_workspace_authority(conn, task_id, "authority_sha256"),
             now,
         ),
     )
