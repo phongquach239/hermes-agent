@@ -101,6 +101,12 @@ zero outside a kanban task (footprint ladder rung 3).
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
+- **Transactional task transitions:** `kanban_db_transitions.unblock_task_in_transaction`
+  owns the DB-only unblock body shared with `kanban_db.unblock_task`. Group callers
+  enter Core `write_txn` BEFORE authority reads, compose every member and final
+  readback under that same lock, and let exceptions roll back task/run/event rows.
+  The public single-task wrapper still refuses nesting. Do not relax `write_txn`
+  or call post-commit-effect helpers inside a group transaction.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
   own connection helper — do not alias it to `projects_db.connect` (a path-proximity generator did).
 
