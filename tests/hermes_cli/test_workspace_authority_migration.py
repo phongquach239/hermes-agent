@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 def _build_git_repo(tmp: str) -> str:
     """Initialise a one-commit git repo under ``tmp/repo`` and return its path."""
@@ -254,3 +256,128 @@ def test_set_workspace_path_backfills_task_runs_workspace_start_columns(tmp_path
             assert len(run_row["workspace_authority_sha256"]) == 64
         finally:
             conn.close()
+
+@pytest.fixture
+def claimed_workspace_attempt(tmp_path):
+    import hermes_cli.kanban_db as kb
+
+    repo = Path(_build_git_repo(str(tmp_path)))
+    conn = _open_test_db(str(tmp_path / "attempts.db"))
+    conn.execute(
+        "INSERT INTO tasks(id,title,status,workspace_kind,created_at,assignee) "
+        "VALUES ('task1','workspace claim','ready','worktree',1,'test-profile')"
+    )
+    conn.commit()
+    assert kb.claim_task(conn, "task1", claimer="current-claim") is not None
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id='task1'"
+    ).fetchone()[0]
+    try:
+        yield conn, repo, run_id
+    finally:
+        conn.close()
+
+
+def _attempt_authority(conn, run_id):
+    return tuple(conn.execute(
+        "SELECT workspace_start_commit,workspace_start_tree,workspace_authority_sha256 "
+        "FROM task_runs WHERE id=?", (run_id,),
+    ).fetchone())
+
+
+def test_workspace_backfill_preserves_history_and_replay(claimed_workspace_attempt):
+    import hermes_cli.kanban_db_workspace as kdw
+
+    conn, repo, current_id = claimed_workspace_attempt
+    historical = []
+    for status, outcome in [("done", "completed"), ("failed", "failed"),
+                            ("failed", "rate_limited"), ("running", None)]:
+        historical.append(conn.execute(
+            "INSERT INTO task_runs(task_id,status,outcome,started_at,ended_at) "
+            "VALUES ('task1',?,?,1,?)",
+            (status, outcome, None if status == "running" else 2),
+        ).lastrowid)
+    conn.commit()
+    before = {row_id: _attempt_authority(conn, row_id) for row_id in historical}
+    kdw.set_workspace_path(conn, "task1", repo)
+    current = _attempt_authority(conn, current_id)
+    assert all(current), "the actual pre-spawn claim must receive full authority"
+    assert {row_id: _attempt_authority(conn, row_id) for row_id in historical} == before
+
+    (repo / "f.txt").write_text("a later commit must not restamp a started attempt")
+    subprocess.run(["git", "-C", str(repo), "commit", "-am", "later", "-q"], check=True)
+    kdw.set_workspace_path(conn, "task1", repo)
+    assert _attempt_authority(conn, current_id) == current
+    assert {row_id: _attempt_authority(conn, row_id) for row_id in historical} == before
+
+
+@pytest.mark.parametrize("case", [
+    "partial_tree", "partial_hash", "terminal_status", "terminal_outcome", "ended",
+    "task_terminal", "task_spawned", "run_spawned", "claim_mismatch", "claim_expired",
+    "capture_none", "capture_error", "claim_changed_during_capture", "stamp_sql_failure",
+])
+def test_workspace_backfill_refuses_ineligible_attempts(
+    claimed_workspace_attempt, monkeypatch, case,
+):
+    import hermes_cli.kanban_db_workspace as kdw
+
+    conn, repo, run_id = claimed_workspace_attempt
+    mutations = {
+        "partial_tree": "UPDATE task_runs SET workspace_start_tree='existing-tree' WHERE id=?",
+        "partial_hash": "UPDATE task_runs SET workspace_authority_sha256='existing-hash' WHERE id=?",
+        "terminal_status": "UPDATE task_runs SET status='done' WHERE id=?",
+        "terminal_outcome": "UPDATE task_runs SET outcome='completed' WHERE id=?",
+        "ended": "UPDATE task_runs SET ended_at=2 WHERE id=?",
+        "run_spawned": "UPDATE task_runs SET worker_pid=12345 WHERE id=?",
+        "claim_mismatch": "UPDATE task_runs SET claim_lock='different-claim' WHERE id=?",
+        "claim_expired": "UPDATE task_runs SET claim_expires=0 WHERE id=?",
+    }
+    if case in mutations:
+        conn.execute(mutations[case], (run_id,))
+    if case == "task_terminal":
+        conn.execute("UPDATE tasks SET status='done' WHERE id='task1'")
+    if case == "task_spawned":
+        conn.execute("UPDATE tasks SET worker_pid=12345 WHERE id='task1'")
+    conn.commit()
+    before = _attempt_authority(conn, run_id)
+    if case == "stamp_sql_failure":
+        conn.execute(
+            "CREATE TRIGGER reject_start_stamp BEFORE UPDATE OF workspace_start_commit "
+            "ON task_runs BEGIN SELECT RAISE(ABORT, 'injected start-authority write failure'); END"
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="injected start-authority write failure"):
+            kdw.set_workspace_path(conn, "task1", repo)
+        assert _attempt_authority(conn, run_id) == before
+        return
+    extra_runs = []
+    real_capture = kdw.capture_workspace_authority
+    if case in {"capture_none", "capture_error"}:
+        # A stale task-level row must not be re-used after this capture fails.
+        assert real_capture(conn, task_id="task1", workspace=repo,
+                            source="earlier", captured_by="fixture")
+        def no_capture(*args, **kwargs):
+            if case == "capture_error":
+                raise sqlite3.OperationalError("injected capture failure")
+            return None
+        monkeypatch.setattr(kdw, "capture_workspace_authority", no_capture)
+    elif case == "claim_changed_during_capture":
+        def capture_then_replace(*args, **kwargs):
+            result = real_capture(*args, **kwargs)
+            new_id = conn.execute(
+                "INSERT INTO task_runs(task_id,status,claim_lock,claim_expires,started_at) "
+                "SELECT task_id,'running','replacement',claim_expires,started_at "
+                "FROM task_runs WHERE id=?", (run_id,),
+            ).lastrowid
+            conn.execute(
+                "UPDATE tasks SET current_run_id=?,claim_lock='replacement' WHERE id='task1'",
+                (new_id,),
+            )
+            conn.commit()
+            extra_runs.append(new_id)
+            return result
+        monkeypatch.setattr(kdw, "capture_workspace_authority", capture_then_replace)
+    kdw.set_workspace_path(conn, "task1", repo)
+    assert _attempt_authority(conn, run_id) == before
+    for new_id in extra_runs:
+        assert _attempt_authority(conn, new_id) == (None, None, None)
