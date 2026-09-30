@@ -697,10 +697,9 @@ def _ensure_git_worktree(
     ``base_commit`` (optional, opt-in): when provided, the worktree is
     pinned to that commit. This is the F02 frozen-basis path used by the
     adapter when ``resolve_workspace`` is called with an explicit ``conn``
-    AND the task has a ``task_workspace_plans`` row. Native dispatch
-    wiring through this code path is still PENDING (Main will sequence
-    the caller wiring after R2 hands off); existing ad-hoc callers are
-    not affected because the default (``base_commit=None``) keeps the
+    AND the task has a ``task_workspace_plans`` row. Native dispatch passes
+    its own board connection explicitly. Ad-hoc callers that omit ``conn``
+    are not affected because the default (``base_commit=None``) keeps the
     legacy behavior.
 
     Frozen-basis guarantees (when ``base_commit`` is provided):
@@ -1089,10 +1088,10 @@ def resolve_workspace(
     argument. When passed (and the task has a ``task_workspace_plans`` row),
     the worktree is pinned to the stored ``base_commit`` instead of later
     HEAD. The existing ad-hoc callers that omit ``conn`` keep their legacy
-    behavior (no DB read, no frozen-basis binding). Native dispatch caller
-    wiring through this code path is PENDING — Main will sequence it after
-    R2 hands off. Do NOT add a default ``conn`` lookup here: silently
-    discovering another DB is exactly the bug F02 forbids.
+    behavior (no DB read, no frozen-basis binding). Native dispatch passes
+    its own board connection to the worktree resolver. Do NOT add a default
+    ``conn`` lookup here: silently discovering another DB is exactly the bug
+    F02 forbids.
     """
     kind = task.workspace_kind or "scratch"
     if kind == "worktree":
