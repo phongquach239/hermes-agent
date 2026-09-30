@@ -590,18 +590,16 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
     best-effort: a non-git path leaves the authority table alone and the
     run simply gets NULL authority columns.
 
-    When the task already has a ``task_runs`` row whose
-    ``workspace_start_commit/tree/authority_sha256`` are still NULL (the
-    dispatch hot path inserts the run row BEFORE the workspace is bound;
-    see :func:`hermes_cli.kanban_db._claim_and_open_run`), this also stamps
-    those columns from the freshly-captured authority row so downstream
-    consumers (hm-loop) see the run actually started in the workspace the
-    dispatcher promised. The check uses ``WHERE workspace_start_commit IS
-    NULL`` so it never overwrites an already-populated row.
+    The dispatcher claims BEFORE binding its workspace. Only that still-current,
+    unexpired, not-yet-spawned claim may receive missing start authority. Historical,
+    terminal or partially populated runs are never retroactively certified.
     """
+    attempt = conn.execute(
+        "SELECT current_run_id,claim_lock FROM tasks WHERE id=?", (task_id,),
+    ).fetchone()
     _set_task_column(conn, task_id, "workspace_path", str(path))
     try:
-        capture_workspace_authority(
+        captured = capture_workspace_authority(
             conn,
             task_id=task_id,
             workspace=Path(path),
@@ -609,37 +607,35 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
             captured_by="kanban_db_workspace",
         )
     except Exception:
-        # Authority capture is best-effort during the dispatch hot path;
-        # if git lookup fails or the table is not yet migrated, the run
-        # simply gets NULL authority columns rather than failing the claim.
-        pass
-    try:
-        with _kb.write_txn(conn):
-            conn.execute(
-                """
-                UPDATE task_runs SET
-                    workspace_start_commit = (
-                        SELECT base_commit FROM task_workspace_authority
-                        WHERE task_id = ?
-                    ),
-                    workspace_start_tree = (
-                        SELECT base_tree FROM task_workspace_authority
-                        WHERE task_id = ?
-                    ),
-                    workspace_authority_sha256 = (
-                        SELECT authority_sha256 FROM task_workspace_authority
-                        WHERE task_id = ?
-                    )
-                WHERE task_id = ?
-                  AND workspace_start_commit IS NULL
-                """,
-                (task_id, task_id, task_id, task_id),
-            )
-    except Exception:
-        # task_runs may not yet have the new columns on a board that has
-        # not migrated; the next dispatch tick re-attempts after migration
-        # settles.
-        pass
+        # Preserve the existing best-effort capture contract, but never stamp a
+        # run from a stale task-level authority row after this capture failed.
+        return
+    if captured is None or attempt is None or attempt["current_run_id"] is None:
+        return
+    now = int(time.time())
+    with _kb.write_txn(conn):
+        conn.execute(
+            """
+            UPDATE task_runs SET
+                workspace_start_commit = ?,
+                workspace_start_tree = ?,
+                workspace_authority_sha256 = ?
+            WHERE task_id = ? AND id = ? AND claim_lock = ?
+              AND status = 'running' AND outcome IS NULL AND ended_at IS NULL
+              AND worker_pid IS NULL AND claim_expires > ?
+              AND workspace_start_commit IS NULL
+              AND workspace_start_tree IS NULL
+              AND workspace_authority_sha256 IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM tasks t
+                  WHERE t.id = task_runs.task_id AND t.current_run_id = task_runs.id
+                    AND t.status = 'running' AND t.worker_pid IS NULL
+                    AND t.claim_lock = task_runs.claim_lock AND t.claim_expires > ?
+              )
+            """,
+            (captured["base_commit"], captured["base_tree"], captured["authority_sha256"],
+             task_id, attempt["current_run_id"], attempt["claim_lock"], now, now),
+        )
 
 
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:
