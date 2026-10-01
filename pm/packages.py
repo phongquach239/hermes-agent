@@ -244,8 +244,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         "python_3.14.6-1_aarch64.deb"
     )
 
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        # A pinned PSF embeddable archive supplies only its signed SQLite DLL.
+        # Keep the application interpreter and extension ABI from the first archive.
+        if target == "win32-x64" and archive.name.endswith("-embeddable-amd64.zip"):
+            import zipfile
+
+            overlay = staged / ".sqlite-overlay"
+            overlay.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive) as payload:
+                (overlay / "sqlite3.dll").write_bytes(payload.read("sqlite3.dll"))
+            return
+        super().unpack(archive, staged, target)
+
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
+        overlay = staged / ".sqlite-overlay" / "sqlite3.dll"
+        if target == "win32-x64" and overlay.is_file():
+            destination = staged / "DLLs" / "sqlite3.dll"
+            if not destination.is_file():
+                raise InstallError(self.name, "SQLite overlay requires the full PSF Windows layout")
+            overlay.replace(destination)
+            overlay.parent.rmdir()
         binary = self.binary(staged, target)
         if binary is not None and sys.platform == "darwin":
             from hermes_cli.macos_signing import sign_managed_python

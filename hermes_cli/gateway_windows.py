@@ -1714,14 +1714,21 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
 
 
 def _windows_stop_drain_timeout() -> float:
-    """Bounded stop grace period: a real graceful-drain window, but the CLI must never wedge."""
+    """Bounded process-exit grace covering the configured drain and cooperative teardown."""
+    import math
+
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
 
         configured = float(_get_restart_drain_timeout() or 30.0)
+        if not math.isfinite(configured):
+            configured = 30.0
     except Exception:
         configured = 30.0
-    return max(1.0, min(configured, 30.0))
+    # The process remains alive after agent drain: keepalive (5s), cron (65s),
+    # housekeeping (35s), stop watcher (2s), and MCP (5s) precede the exit ledger.
+    # Reserve 120s for that tail; bound the whole wait to 900s even for extreme config.
+    return max(1.0, min(configured, 780.0)) + 120.0
 
 
 def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:

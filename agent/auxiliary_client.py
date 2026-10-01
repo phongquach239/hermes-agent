@@ -1756,6 +1756,10 @@ class _AnthropicCompletionsAdapter:
             # keyed off base_url; omitting it breaks Portal model resolution.
             base_url=self._base_url,
         )
+        # Keep the per-call SDK timeout separate from the shared client's default.
+        # Presence matters: an explicit None disables the timeout; omission inherits it.
+        if "timeout" in kwargs:
+            anthropic_kwargs["timeout"] = kwargs["timeout"]
         # Opus 4.7+ rejects non-default temperature/top_p/top_k; build_anthropic_kwargs
         # also strips these as a safety net — keep both layers.
         if temperature is not None:

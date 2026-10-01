@@ -494,10 +494,16 @@
           "sha256": "5efa2548bf1248ca07ed6f8afb0cb52b83d4869d533ea5be919a989c8ee1b17c",
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-aarch64-pc-windows-msvc-install_only.tar.gz"
         },
-        "win32-x64": {
-          "sha256": "5d9242012dded591d723a3a572dda265173ad58d8a3e6fdbc6dac8f94f36c80a",
-          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-pc-windows-msvc-install_only.tar.gz"
-        }
+        "win32-x64": [
+          {
+            "sha256": "ac1a727a71738e11de80b76e975f9b8a258aea6412bfc31696b929d59c6aafd0",
+            "url": "https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.zip"
+          },
+          {
+            "sha256": "1d5a8c5b5f3a7c3295b919b13b7d7e2d9bb5172e5e1fd7174ff1b18fdd177ede",
+            "url": "https://www.python.org/ftp/python/3.15.0/python-3.15.0rc2-embeddable-amd64.zip"
+          }
+        ]
       },
       "version": "3.14.7+20260901"
     },

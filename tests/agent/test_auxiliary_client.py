@@ -2993,6 +2993,51 @@ class TestAuxiliaryPoolRotationRetry:
         mock_fallback.assert_not_called()
 
 
+class TestAnthropicAuxiliaryRequestTimeout:
+    """Per-call deadlines reach the SDK without changing a cached client's default."""
+
+    @pytest.mark.parametrize("timeout_kind", ["numeric", "httpx", "omitted", "none"])
+    def test_serialized_request_keeps_per_call_timeout(self, monkeypatch, timeout_kind):
+        import httpx
+        from agent.anthropic_adapter import build_anthropic_client
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        class RequestCaptured(BaseException):
+            pass
+
+        observed = []
+
+        def capture_send(_client, request, *args, **kwargs):
+            observed.append(request.extensions["timeout"])
+            raise RequestCaptured()
+
+        monkeypatch.setattr(httpx.Client, "send", capture_send)
+        sdk = build_anthropic_client("offline-test-credential", "https://api.minimax.io/anthropic")
+        adapter = AnthropicAuxiliaryClient(sdk, "MiniMax-M3", "offline-test-credential",
+                                           "https://api.minimax.io/anthropic")
+        original_timeout = sdk.timeout
+        request = {"model": "MiniMax-M3", "messages": [{"role": "user", "content": "test"}],
+                   "max_tokens": 64}
+        if timeout_kind == "numeric":
+            request["timeout"] = 12.5
+            expected = httpx.Timeout(12.5).as_dict()
+        elif timeout_kind == "httpx":
+            request["timeout"] = httpx.Timeout(20.0, connect=2.0, read=7.0)
+            expected = request["timeout"].as_dict()
+        elif timeout_kind == "none":
+            request["timeout"] = None
+            expected = httpx.Timeout(None).as_dict()
+        else:
+            expected = original_timeout.as_dict()
+        try:
+            with pytest.raises(RequestCaptured):
+                adapter.chat.completions.create(**request)
+            assert observed == [expected]
+            assert sdk.timeout is original_timeout
+        finally:
+            sdk.close()
+
+
 class TestAnthropicAuxiliaryReasoningTranslation:
     """Native Anthropic aux adapters must receive normalized Hermes reasoning.
 
