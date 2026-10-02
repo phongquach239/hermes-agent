@@ -914,3 +914,83 @@ def test_create_swarm_basis_capture_uses_workspace_git_choke_point(
             assert conn.execute("SELECT COUNT(*) FROM task_workspace_plans").fetchone()[0] == 0
         finally:
             conn.close()
+
+def test_create_swarm_basis_capture_runs_under_hardened_repo_git_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GHSA-7x36-8jrh-v4pw: both basis ``rev-parse`` probes spawn git with no
+    stdin and exactly ``noninteractive_repo_git_env(repo)`` (isolated config,
+    pinned execution sinks, repository-named filters neutralized). A repository
+    whose filter discovery cannot be trusted refuses planning before any basis
+    probe is spawned, instead of running git unhardened."""
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kdw
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_cli.kanban_swarm import SwarmWorkerSpec, create_swarm
+
+    repo = _init_repo(tmp_path / "repo")
+    commit = _head(repo)
+    # A repository-named filter: the fixed env pins cannot name it, discovery must.
+    (repo / ".gitattributes").write_text("f.txt filter=evil\n")
+    with open(repo / ".git" / "config", "a") as fh:
+        fh.write('[filter "evil"]\n\tclean = cat\n\tsmudge = cat\n')
+    expected_env = noninteractive_repo_git_env(repo)
+    assert expected_env is not None
+    pinned = {
+        expected_env[f"GIT_CONFIG_KEY_{i}"]: expected_env[f"GIT_CONFIG_VALUE_{i}"]
+        for i in range(int(expected_env["GIT_CONFIG_COUNT"]))
+    }
+    assert pinned["filter.evil.clean"] == "" and pinned["filter.evil.smudge"] == ""
+
+    untrusted = _init_repo(tmp_path / "untrusted")
+    untrusted_commit = _head(untrusted)
+    with open(untrusted / ".git" / "config", "a") as fh:
+        # More filter keys than discovery will pass through argv/env (E2BIG guard).
+        fh.write("".join(f'[filter "f{i}"]\n\tclean = cat\n' for i in range(300)))
+    assert noninteractive_repo_git_env(untrusted) is None
+
+    # Record every subprocess.run spawn from here on; the setup git calls above are not Core's.
+    real_run = kdw.subprocess.run
+    spawns: list[tuple[list[str], dict]] = []
+
+    def recording_run(argv, *args, **kwargs):
+        spawns.append((list(argv), kwargs))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(kdw.subprocess, "run", recording_run)
+
+    def basis_probe_spawns(target: Path, head: str) -> list[tuple[list[str], dict]]:
+        # The two swarm basis-capture argv shapes; other rev-parse callers are not under test.
+        shapes = (["rev-parse", "HEAD"], ["rev-parse", f"{head}^{{tree}}"])
+        return [
+            (argv, kwargs) for argv, kwargs in spawns
+            if argv[:2] == ["git", "-C"] and Path(argv[2]).resolve() == target.resolve()
+            and argv[3:] in shapes
+        ]
+
+    kwargs = dict(
+        workers=[SwarmWorkerSpec(profile="p1", title="w1", body="b1")],
+        verifier_assignee="verifier",
+        synthesizer_assignee="synth",
+        workspace_kind="worktree",
+        per_task_worktrees=True,
+    )
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        create_swarm(conn, goal="hardened capture", workspace_path=str(repo), **kwargs)
+    finally:
+        conn.close()
+    probes = basis_probe_spawns(repo, commit)
+    assert {tuple(argv[3:]) for argv, _ in probes} == {("rev-parse", "HEAD"), ("rev-parse", f"{commit}^{{tree}}")}
+    for _, spawn_kwargs in probes:
+        assert spawn_kwargs.get("stdin") is subprocess.DEVNULL
+        assert spawn_kwargs.get("env") == expected_env
+
+    conn = kbc.connect(tmp_path / "kanban-untrusted.db")
+    try:
+        with pytest.raises(ValueError, match="no committed HEAD"):
+            create_swarm(conn, goal="untrusted capture", workspace_path=str(untrusted), **kwargs)
+        assert conn.execute("SELECT COUNT(*) FROM task_workspace_plans").fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert basis_probe_spawns(untrusted, untrusted_commit) == []
