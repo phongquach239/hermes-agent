@@ -859,3 +859,58 @@ def test_create_swarm_without_frozen_base_captures_current_basis_once(
             assert {row["base_tree"] for row in rows} == {tree}
         finally:
             conn.close()
+
+
+def test_create_swarm_basis_capture_uses_workspace_git_choke_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Basis capture must go through ``kanban_db_workspace._git`` (the module's
+    single git spawn point and its environment policy), never a raw spawn: a
+    failure reported by ``_git`` must refuse planning, and both rev-parse
+    probes must be observed there."""
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kdw
+    from hermes_cli.kanban_swarm import SwarmWorkerSpec, create_swarm
+
+    real_git = kdw._git
+    calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    def recording_git(repo_root, *args, timeout):
+        calls.append((Path(repo_root), args))
+        return real_git(repo_root, *args, timeout=timeout)
+
+    monkeypatch.setattr(kdw, "_git", recording_git)
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        repo = _init_repo(td / "repo")
+        commit = _head(repo)
+        kwargs = dict(
+            workers=[SwarmWorkerSpec(profile="p1", title="w1", body="b1")],
+            verifier_assignee="verifier",
+            synthesizer_assignee="synth",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            per_task_worktrees=True,
+        )
+        conn = kbc.connect(td / "kanban.db")
+        try:
+            create_swarm(conn, goal="capture via _git", **kwargs)
+        finally:
+            conn.close()
+        probes = [args for root, args in calls if root == repo.resolve()]
+        assert ("rev-parse", "HEAD") in probes
+        assert ("rev-parse", f"{commit}^{{tree}}") in probes
+
+        def refusing_git(repo_root, *args, timeout):
+            if args[:1] == ("rev-parse",):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "refused")
+            return real_git(repo_root, *args, timeout=timeout)
+
+        monkeypatch.setattr(kdw, "_git", refusing_git)
+        conn = kbc.connect(td / "kanban-refused.db")
+        try:
+            with pytest.raises(ValueError, match="no committed HEAD"):
+                create_swarm(conn, goal="refused capture", **kwargs)
+            assert conn.execute("SELECT COUNT(*) FROM task_workspace_plans").fetchone()[0] == 0
+        finally:
+            conn.close()

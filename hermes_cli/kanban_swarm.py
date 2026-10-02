@@ -19,7 +19,6 @@ from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import sqlite3
-import subprocess
 import time
 from typing import Any, Iterable, Optional
 
@@ -214,18 +213,15 @@ def create_swarm(
                 # A new planned topology needs an actual frozen basis. A
                 # non-Git or unborn project cannot become ready with NULLs.
                 # Replays above reuse the stored basis without reading HEAD.
-                head_proc = subprocess.run(
-                    ["git", "-C", str(project_root), "rev-parse", "HEAD"],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                    timeout=10, check=False,
-                )
+                # Through the workspace module's single git choke point so
+                # basis capture shares its environment policy with
+                # materialization (``worktree add``) instead of a raw spawn.
+                head_proc = kdw._git(project_root, "rev-parse", "HEAD", timeout=10)
                 if head_proc.returncode != 0 or not head_proc.stdout.strip():
                     raise ValueError("worktree planning requires a frozen Git basis: no committed HEAD")
                 git_base_commit = head_proc.stdout.strip()
-                tree_proc = subprocess.run(
-                    ["git", "-C", str(project_root), "rev-parse", f"{git_base_commit}^{{tree}}"],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                    timeout=10, check=False,
+                tree_proc = kdw._git(
+                    project_root, "rev-parse", f"{git_base_commit}^{{tree}}", timeout=10,
                 )
                 if tree_proc.returncode != 0 or not tree_proc.stdout.strip():
                     raise ValueError("worktree planning requires a frozen Git basis: commit tree unavailable")
