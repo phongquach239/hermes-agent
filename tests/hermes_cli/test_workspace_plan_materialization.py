@@ -942,13 +942,25 @@ def test_registered_target_owns_its_git_metadata(
         sibling = target.parent / "registered sibling"
         created = _git(primary, "worktree", "add", "-qb", branch, str(sibling), base_commit)
         assert created.returncode == 0, created.stderr
-        (target / ".git").write_bytes((sibling / ".git").read_bytes())
+        # Overwrite in place: Git for Windows marks the gitfile hidden
+        # (core.hideDotFiles=dotGitOnly) and CREATE_ALWAYS ("wb") is denied on
+        # hidden files, so truncate-and-write keeps the copy portable.
+        with (target / ".git").open("r+b") as pointer:
+            pointer.write((sibling / ".git").read_bytes())
+            pointer.truncate()
     # Isolate metadata ownership: branch, objects, toplevel and list membership pass.
+    # Git prints forward-slash paths on Windows, so compare resolved paths.
     assert _git(target, "branch", "--show-current").stdout.strip() == branch
     assert _git(target, "rev-parse", "HEAD").stdout.strip() == base_commit
-    assert _git(target, "rev-parse", "--show-toplevel").stdout.strip() == str(target)
+    toplevel = _git(target, "rev-parse", "--show-toplevel").stdout.strip()
+    assert Path(toplevel).resolve() == target.resolve()
     before_list = _git(primary, "worktree", "list", "--porcelain").stdout
-    assert f"worktree {target}\n" in before_list
+    listed = {
+        Path(line[len("worktree "):]).resolve()
+        for line in before_list.splitlines()
+        if line.startswith("worktree ")
+    }
+    assert target.resolve() in listed
     before_refs = _git(primary, "show-ref").stdout
     before_pointer = (target / ".git").read_bytes()
     before_db = _snapshot(workspace_db)

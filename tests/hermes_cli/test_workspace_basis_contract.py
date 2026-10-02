@@ -722,7 +722,8 @@ def test_create_swarm_binds_plan_before_activation(tmp_path: Path) -> None:
                 assert row["base_tree"] == tree
                 assert row["plan_version"] == 1
                 # Canonical worktree path is the per-task anchor.
-                assert row["workspace_path"].endswith(f"/.worktrees/{tid}")
+                # Stored with the platform separator, so compare path parts.
+                assert Path(row["workspace_path"]).parts[-2:] == (".worktrees", tid)
                 assert Path(row["workspace_root"]).resolve() == repo.resolve()
                 assert len(row["basis_digest"]) == 64
         finally:
