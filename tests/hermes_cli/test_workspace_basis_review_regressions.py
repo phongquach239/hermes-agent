@@ -108,7 +108,11 @@ def test_real_backlink_identity_and_unique_registration(db, tmp_path, kind):
             (target / '.git').unlink()
             (target / '.git').symlink_to(sibling / '.git')
         else:
-            (target / '.git').write_bytes((sibling / '.git').read_bytes())
+            # Git for Windows hides gitfiles; "wb" (CREATE_ALWAYS) is denied on
+            # hidden files, so overwrite in place instead.
+            with (target / '.git').open('r+b') as pointer:
+                pointer.write((sibling / '.git').read_bytes())
+                pointer.truncate()
     if kind in {'own_backlink_alias', 'forged_backlink_alias'}:
         alias1, alias2 = root / 'backlink-one', root / 'backlink-two'
         alias1.symlink_to(alias2)
@@ -117,9 +121,15 @@ def test_real_backlink_identity_and_unique_registration(db, tmp_path, kind):
         (metadata / 'gitdir').write_text(str(alias1) + '\n')
         assert alias1.resolve() == target / '.git'
     if kind == 'forged_direct_backlink':
-        (sibling_gitdir / 'gitdir').write_text(str(target / '.git') + '\n')
+        # Forge in git's own gitdir spelling (forward slashes on every OS).
+        (sibling_gitdir / 'gitdir').write_text((target / '.git').as_posix() + '\n')
     listing = git(root, 'worktree', 'list', '--porcelain')
-    occurrences = sum(line == 'worktree ' + str(target) for line in listing.splitlines())
+    # Path equality absorbs git's forward-slash spelling on Windows without
+    # resolving symlinks, so alias entries still count as distinct paths.
+    occurrences = sum(
+        line.startswith('worktree ') and Path(line[len('worktree '):]) == target
+        for line in listing.splitlines()
+    )
     assert occurrences == {'own_backlink_alias': 0, 'forged_direct_backlink': 2}.get(kind, 1)
     before, refs = list(db.iterdump()), git(root, 'show-ref')
     if foreign or kind == 'own_backlink_alias':
