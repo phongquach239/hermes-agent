@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 
@@ -154,3 +156,29 @@ def probe_root(tmp_path):
     """
     (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path
+
+
+def _is_hermes_state_module(name: str) -> bool:
+    return name.startswith(("hermes_cli", "hermes_state")) or name == "hermes_constants"
+
+
+@pytest.fixture
+def fresh_hermes_cli_modules():
+    """Re-import ``hermes_cli``/``hermes_state``/``hermes_constants`` for one test.
+
+    Tests that need module-level state rebuilt under a new ``HERMES_HOME`` evict
+    these modules. The originals must come back afterwards: later test modules
+    hold the original objects (``from hermes_cli import kanban_db as kb``) while
+    lazily imported siblings would otherwise resolve to the fresh copies, so
+    their monkeypatches silently miss. Copies first imported during the test are
+    dropped too, because they are bound to the fresh modules.
+    """
+    saved = {name: mod for name, mod in sys.modules.items() if _is_hermes_state_module(name)}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        yield
+    finally:
+        for name in [name for name in sys.modules if _is_hermes_state_module(name)]:
+            del sys.modules[name]
+        sys.modules.update(saved)
