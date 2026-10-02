@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
-from gateway.wake import session_owned_by_profile
+from gateway.wake import KANBAN_WAKE_SCHEMA, session_owned_by_profile
 
 
 def _kbc():
@@ -511,6 +511,7 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.wake_identity: Optional[dict] = None
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -563,8 +564,15 @@ class _KanbanNotification:
         task, sub = self.task, self.sub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
+        self.wake_identity = None
         if not self.wake_kinds:
             return
+        # Structured identity for plugins: every event this wake settles, not the localized text.
+        self.wake_identity = {
+            "schema": KANBAN_WAKE_SCHEMA, "board": self.board_slug, "task_id": sub["task_id"],
+            "event_ids": [ev.id for ev in self.d["events"]],
+            "kinds": [k for k in _WAKE_KINDS if k in self.wake_kinds],
+        }
         if self.is_push_adapter:
             self.session_key = getattr(task, "session_id", None) or ""
         else:
@@ -627,7 +635,8 @@ class _KanbanNotification:
             async with self._owner_scope():
                 await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
                                    profile=self._served_wake_profile(),
-                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
+                                   notification_category="diagnostic" if self.wake_diagnostic else "result",
+                                   kanban_wake=self.wake_identity)
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -656,7 +665,8 @@ class _KanbanNotification:
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
             await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result")
+                               notification_category="diagnostic" if self.wake_diagnostic else "result",
+                               kanban_wake=self.wake_identity)
         self._log_woke()
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
@@ -775,7 +785,7 @@ class _KanbanNotification:
                     self.format_event(ev)
                 self.build_wake_text()
                 if self.wake_kinds:
-                    wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
+                    wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds, self.wake_identity))
             self.d = {**self.d, "events": original_events}
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
         from gateway.wake import WakeNotAccepted
@@ -783,7 +793,7 @@ class _KanbanNotification:
         # A requested wake is required even when its passive ping already landed.
         if wake_payloads:
             try:
-                for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
+                for self.synth, self.wake_diagnostic, self.wake_kinds, self.wake_identity in wake_payloads:
                     await self.wake()
                 self.clear_failures()
             except WakeNotAccepted:

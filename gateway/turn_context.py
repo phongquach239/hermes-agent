@@ -62,6 +62,8 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
+    # ``gateway.wake.wake_turn_identity`` of the triggering event; staged for ``pre_llm_call``.
+    wake_identity: Optional[dict] = None
     user_config: Any = None
     mute_notification_reply: bool = False
     enabled_toolsets: Any = None

@@ -8,6 +8,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 
 from __future__ import annotations
 
+import copy
 import logging
 import sys
 import threading
@@ -138,6 +139,20 @@ def _pop_turn_note(agent: Any, attr: str) -> str:
 def consume_gateway_turn_context_notes(agent: Any) -> str:
     """Pop the gateway's per-turn must-deliver notes."""
     return _pop_turn_note(agent, "_gateway_turn_context_notes")
+
+
+def consume_gateway_turn_wake_identity(agent: Any) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """Pop the gateway's per-turn ``(internal_event, kanban_wake)``; ``(False, None)`` when absent
+    or malformed (CLI/TUI/api_server turns never stage one). ``kanban_wake`` is a fresh copy and
+    only accompanies a Core-built internal event (see ``gateway.wake.wake_turn_identity``)."""
+    staged = getattr(agent, "_gateway_turn_wake_identity", None)
+    if staged is not None:
+        with suppress(Exception):
+            agent._gateway_turn_wake_identity = None
+    if not isinstance(staged, dict) or staged.get("internal_event") is not True:
+        return False, None
+    wake = staged.get("kanban_wake")
+    return True, copy.deepcopy(wake) if isinstance(wake, dict) else None
 
 
 def consume_surface_switch_note(agent: Any) -> str:
@@ -758,6 +773,7 @@ def _collect_pre_llm_call_context(
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
     runaway plugin can't inflate every subsequent turn's prompt."""
+    internal_event, kanban_wake = consume_gateway_turn_wake_identity(agent)
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -774,6 +790,8 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            internal_event=internal_event,
+            kanban_wake=kanban_wake,
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

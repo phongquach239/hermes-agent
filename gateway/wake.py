@@ -7,15 +7,25 @@ async-delegation completions: the CLIENT owns the next turn, so they are never s
 new ``role=user`` prompt (could cross a pending human-confirmation gate); instead
 ``persist_delegation_delivery`` writes a durable DELIVERY row (``display_kind=
 "async_delegation_complete"``, read by TUI/desktop pollers). Failures RAISE (after bounded retries
-on transient errors) so callers can rewind cursors / retry instead of silently losing the event."""
+on transient errors) so callers can rewind cursors / retry instead of silently losing the event.
+
+An automatic Kanban wake may carry a structured ``kanban_wake`` identity (``KANBAN_WAKE_SCHEMA``)
+so plugins can bind the woken turn without parsing its localized text. It rides only the push
+path's internal event (``internal=True`` is the trust anchor: only Core builds internal events) and
+reaches ``pre_llm_call`` via ``wake_turn_identity``. Stateless wakes carry NO identity: the HTTP
+self-post is indistinguishable from any API-key client posting the same body."""
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Version tag of the ``kanban_wake`` identity dict (board, task_id, event_ids, kinds).
+KANBAN_WAKE_SCHEMA = "kanban-wake/v1"
 
 # A wake self-post runs the whole agent turn synchronously (stream=false); generous ceiling so long
 # tool-using turns aren't killed mid-flight.
@@ -88,20 +98,34 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
         raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
+def wake_turn_identity(event: Any) -> dict:
+    """Per-turn origin forwarded to ``pre_llm_call``: ``internal_event`` is True only for a
+    Core-built internal event, ``kanban_wake`` only for the identity ``deliver_wake`` attached to
+    one. Human content (wake-like text or forged metadata) never yields an identity."""
+    internal = getattr(event, "internal", False) is True
+    wake = (getattr(event, "metadata", None) or {}).get("kanban_wake") if internal else None
+    return {"internal_event": internal, "kanban_wake": copy.deepcopy(wake) if isinstance(wake, dict) else None}
+
+
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
-                       notification_category: str = "result", profile: Optional[str] = None) -> None:
+                       notification_category: str = "result", profile: Optional[str] = None,
+                       kanban_wake: Optional[dict] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
     names the served profile that canonically owns a non-push destination; a non-default value is
     delivered in-process under the caller's profile scope (see ``_self_post_chat_completion``).
+    ``kanban_wake`` (see module docstring) rides the push path only; non-push wakes drop it.
     Raises on failure so the caller can rewind/retry."""
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
+        metadata: dict = {"notification_category": notification_category}
+        if kanban_wake is not None:
+            metadata["kanban_wake"] = copy.deepcopy(kanban_wake)
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
-                                   metadata={"notification_category": notification_category})
+                                   metadata=metadata)
         await admit_internal_event(adapter, synth_event)
         return
     if not session_id:

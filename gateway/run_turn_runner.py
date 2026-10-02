@@ -1276,6 +1276,8 @@ class TurnRunner:
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
         agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        # Same contract for the turn's wake identity (consumed once by ``pre_llm_call``).
+        agent._gateway_turn_wake_identity = ctx.wake_identity or {"internal_event": False, "kanban_wake": None}
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
