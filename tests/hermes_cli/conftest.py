@@ -158,6 +158,21 @@ def probe_root(tmp_path):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _forget_parked_worker_procs():
+    """Empty ``kanban_db_dispatch._live_worker_procs`` after every test.
+
+    On Windows ``_default_spawn`` parks each spawned ``Popen`` there for the zombie reaper, fakes
+    included, and nothing else clears it. A fake left by one test (no ``poll``) would make a later
+    test's reaper raise, an order-dependent failure.
+    """
+    yield
+    dispatch = sys.modules.get("hermes_cli.kanban_db_dispatch")
+    procs = getattr(dispatch, "_live_worker_procs", None)
+    if isinstance(procs, dict):
+        procs.clear()
+
+
 def _is_hermes_state_module(name: str) -> bool:
     return name.startswith(("hermes_cli", "hermes_state")) or name == "hermes_constants"
 
